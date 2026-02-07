@@ -1,0 +1,49 @@
+{
+  "name": "tcl-goto",
+  "displayName": "Tcl Go To Definition",
+  "description": "Provide F12 Go To Definition for Tcl files",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:tcl"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "tcl",
+        "extensions": [
+          ".tcl"
+        ],
+        "aliases": [
+          "Tcl",
+          "tcl"
+        ]
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "editor.action.revealDefinition",
+        "key": "F12",
+        "when": "editorTextFocus && editorLangId == 'tcl'"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "pretest": "npm run compile"
+  },
+  "devDependencies": {
+    "typescript": "^4.9.5",
+    "@types/node": "^16.11.7",
+    "@types/vscode": "^1.60.0",
+    "@vscode/test-electron": "^2.2.1"
+  }
+}
