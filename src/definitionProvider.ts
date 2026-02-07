@@ -4,12 +4,8 @@ import { TclIndexer } from './indexer';
 export class TclDefinitionProvider implements vscode.DefinitionProvider {
   private indexer: TclIndexer;
 
-  constructor() {
-    this.indexer = new TclIndexer();
-  }
-
-  activate(context: vscode.ExtensionContext) {
-    this.indexer.activate(context);
+  constructor(indexer: TclIndexer) {
+    this.indexer = indexer;
   }
 
   async provideDefinition(
