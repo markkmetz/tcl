@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { parseDefinitionLine } from './parser';
 
 export class TclIndexer {
   private index: Map<string, vscode.Location[]> = new Map();
@@ -32,13 +33,9 @@ export class TclIndexer {
       const line = lines[i];
 
       // match both 'proc' and 'method'
-      const m = line.match(/^\s*(proc|method)\s+([A-Za-z0-9_:.]+)\s+\{([^}]*)\}/);
-      if (m && m[2]) {
-        const type = m[1];           // 'proc' or 'method'
-        const name = m[2];
-        const paramsRaw = m[3] || '';
-        const params = paramsRaw.split(/\s+/).filter(Boolean);
-
+      const def = parseDefinitionLine(line);
+      if (def) {
+        const { type, name, params } = def;
         const pos = new vscode.Position(i, line.indexOf(name));
         const loc = new vscode.Location(uri, pos);
 
