@@ -3,15 +3,12 @@
   "publisher": "markkmetz",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "0.0.4",
+  "version": "1.0.4",
   "engines": {
     "vscode": "^1.60.0"
   },
   "categories": [
     "Programming Languages"
-  ],
-  "activationEvents": [
-    "onLanguage:tcl"
   ],
   "main": "./out/extension.js",
   "contributes": {

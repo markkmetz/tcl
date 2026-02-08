@@ -2,13 +2,13 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Extension",
+      "name": "Build Extension",
       "type": "extensionHost",
       "request": "launch",
       "runtimeExecutable": "${execPath}",
       "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "npm: compile",
+      "preLaunchTask": "npm: build",
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "console": "integratedTerminal"
     }
