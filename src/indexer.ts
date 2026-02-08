@@ -85,6 +85,8 @@ export class TclIndexer {
     const importedProcs = new Set<string>();
     const fileNamespaces = new Set<string>();
     let namespaceStack: string[] = [];
+    let namespaceDepths: number[] = []; // track brace depth at which each namespace was entered
+    let braceDepth = 0;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -95,6 +97,18 @@ export class TclIndexer {
         const n = nsStart[1].replace(/^::+/, '');
         namespaceStack.push(n);
         fileNamespaces.add(n);
+        namespaceDepths.push(braceDepth + 1); // the depth after the opening brace
+      }
+
+      // count braces on this line to track depth
+      const openBraces = (line.match(/\{/g) || []).length;
+      const closeBraces = (line.match(/\}/g) || []).length;
+      braceDepth += openBraces - closeBraces;
+
+      // pop namespace if we've returned to the depth before the namespace block
+      while (namespaceDepths.length > 0 && braceDepth < namespaceDepths[namespaceDepths.length - 1]) {
+        namespaceStack.pop();
+        namespaceDepths.pop();
       }
 
       // detect namespace import statements
@@ -175,10 +189,6 @@ export class TclIndexer {
           this.variableIndex.set(vname, varArr);
         }
       }
-
-      // naive namespace block end detection - pop on a closing brace line
-      const nsEnd = line.match(/^\s*}\s*$/);
-      if (nsEnd && namespaceStack.length) namespaceStack.pop();
     }
 
     // store imports/namespace info for this file
