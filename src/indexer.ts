@@ -303,7 +303,7 @@ export class TclIndexer {
       const isHttps = urlObj.protocol === 'https:';
       const httpModule = isHttps ? https : http;
       
-      const response = await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve, reject) => {
+      const response = await new Promise<{ stdout: string; stderr: string; exitCode: number; success?: boolean; error?: string }>((resolve, reject) => {
         const postData = Buffer.from(content, 'utf-8');
         
         const options = {
@@ -324,7 +324,13 @@ export class TclIndexer {
           res.on('end', () => {
             try {
               const json = JSON.parse(data);
-              resolve({ stdout: json.stdout || '', stderr: json.stderr || '', exitCode: json.exitCode || 0 });
+              resolve({
+                stdout: json.stdout || '',
+                stderr: json.stderr || '',
+                exitCode: json.exitCode || 0,
+                success: json.success,
+                error: json.error
+              });
             } catch (e) {
               reject(new Error('Invalid JSON response from remote service'));
             }
@@ -342,6 +348,9 @@ export class TclIndexer {
       });
       
       let output = (response.stderr && response.stderr.trim().length ? response.stderr : response.stdout).trim();
+      if (!output && response.error) output = response.error;
+      if (!output && response.exitCode && response.exitCode !== 0) output = `tclsh exited with code ${response.exitCode}`;
+      if (!output && response.success === false) output = 'tclsh returned failure without details';
       
       if (output) {
         const lineMatch = output.match(/line (\d+)/i);
