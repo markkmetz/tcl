@@ -2,7 +2,7 @@
   "name": "marks-tcl-extension",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -70,7 +70,9 @@
         },
         "tcl.index.externalPaths": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Additional filesystem folders (absolute paths) to index for Tcl files."
         },
@@ -92,8 +94,7 @@
         "key": "F12",
         "when": "editorTextFocus && editorLangId == 'tcl'"
       }
-    ]
-    ,
+    ],
     "commands": [
       {
         "command": "tcl.formatDocument",
