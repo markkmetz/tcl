@@ -122,7 +122,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "pretest": "npm run compile",
-    "test": "mocha -r ts-node/register 'test/**/*.test.ts'"
+    "test": "mocha -r ts-node/register 'test/**/*.test.ts'",
+    "build": "npm run compile && npm run package",
+    "package": "npm version patch && vsce package"
   },
   "devDependencies": {
     "typescript": "^4.9.5",
@@ -133,6 +135,7 @@
     "chai": "^4.3.7",
     "ts-node": "^10.9.1",
     "@types/mocha": "^10.0.1",
-    "@types/chai": "^4.3.4"
+    "@types/chai": "^4.3.4",
+    "@vscode/vsce": "^2.20.0"
   }
 }
