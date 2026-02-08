@@ -67,13 +67,22 @@
           "type": "boolean",
           "default": true,
           "description": "Enable lint diagnostics (duplicates, unused variables)."
-        }
-        ,
+        },
         "tcl.index.externalPaths": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
           "description": "Additional filesystem folders (absolute paths) to index for Tcl files."
+        },
+        "tcl.runtime.tclshPath": {
+          "type": "string",
+          "default": "tclsh",
+          "description": "Path to tclsh executable for runtime syntax checking. Default: 'tclsh' (searches PATH)."
+        },
+        "tcl.runtime.enableSyntaxCheck": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable runtime syntax checking using tclsh."
         }
       }
     },

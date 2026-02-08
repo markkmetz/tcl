@@ -11,6 +11,16 @@ export function activate(context: vscode.ExtensionContext) {
   const indexer = new TclIndexer();
   indexer.activate(context);
 
+  const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  statusBar.text = 'Tcl: Ready';
+  statusBar.tooltip = 'Tcl extension status';
+  statusBar.show();
+  context.subscriptions.push(statusBar);
+
+  const setStatus = (text: string) => {
+    statusBar.text = text;
+  };
+
   // disposables for optional features
   let defDisposable: vscode.Disposable | undefined;
   let hoverDisposable: vscode.Disposable | undefined;
@@ -20,6 +30,12 @@ export function activate(context: vscode.ExtensionContext) {
   let diagnostics: vscode.DiagnosticCollection | undefined;
 
   const config = () => vscode.workspace.getConfiguration();
+  const getActiveTclDoc = () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return undefined;
+    if (editor.document.languageId !== 'tcl') return undefined;
+    return editor.document;
+  };
 
   const registerProviders = async () => {
     const cfg = config().get('tcl.features') as any || {};
@@ -77,7 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(diagnostics);
       }
       const runLint = async () => {
-        const lintResults = await indexer.lint();
+        const lintResults = await indexer.lint(getActiveTclDoc());
         diagnostics!.clear();
         for (const r of lintResults) diagnostics!.set(r.uri, r.diagnostics);
       };
@@ -89,6 +105,35 @@ export function activate(context: vscode.ExtensionContext) {
 
   // initial registration
   registerProviders();
+
+  // index only on save/edit of current document
+  const runLintIfRegistered = async () => {
+    if (diagnostics) {
+      const lintResults = await indexer.lint(getActiveTclDoc());
+      diagnostics.clear();
+      for (const r of lintResults) diagnostics.set(r.uri, r.diagnostics);
+    }
+  };
+
+  context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => {
+    if (doc.languageId !== 'tcl') return;
+    if (vscode.window.activeTextEditor?.document.uri.toString() !== doc.uri.toString()) return;
+    indexer.indexFile(doc.uri).then(() => runLintIfRegistered());
+  }));
+
+  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => {
+    if (e.document.languageId !== 'tcl') return;
+    if (vscode.window.activeTextEditor?.document.uri.toString() !== e.document.uri.toString()) return;
+    indexer.indexFile(e.document.uri).then(() => runLintIfRegistered());
+  }));
+
+  // status events
+  indexer.onWillIndex(() => setStatus('Tcl: Indexing...'), null, context.subscriptions);
+  indexer.onDidIndex(() => setStatus('Tcl: Ready'), null, context.subscriptions);
+  indexer.onDidStartLint(() => setStatus('Tcl: Linting...'), null, context.subscriptions);
+  indexer.onDidEndLint(() => setStatus('Tcl: Ready'), null, context.subscriptions);
+  indexer.onDidStartSyntaxCheck(() => setStatus('Tcl: Tclsh syntax check...'), null, context.subscriptions);
+  indexer.onDidEndSyntaxCheck(() => setStatus('Tcl: Ready'), null, context.subscriptions);
 
   // register formatter and format command
   const formatter = new TclFormatter();

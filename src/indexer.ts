@@ -1,5 +1,12 @@
 import * as vscode from 'vscode';
 import { parseDefinitionLine } from './parser';
+import { exec, spawn } from 'child_process';
+import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+
+const execAsync = promisify(exec);
 
 export class TclIndexer {
   private index: Map<string, vscode.Location[]> = new Map();
@@ -12,22 +19,62 @@ export class TclIndexer {
   private fileImports: Map<string, { fileNamespaces: Set<string>; importedNamespaces: Set<string>; importedProcs: Set<string> }> = new Map();
   private _onDidIndex = new vscode.EventEmitter<void>();
   public readonly onDidIndex = this._onDidIndex.event;
+  private _onWillIndex = new vscode.EventEmitter<void>();
+  public readonly onWillIndex = this._onWillIndex.event;
+  private _onDidStartLint = new vscode.EventEmitter<void>();
+  public readonly onDidStartLint = this._onDidStartLint.event;
+  private _onDidEndLint = new vscode.EventEmitter<void>();
+  public readonly onDidEndLint = this._onDidEndLint.event;
+  private _onDidStartSyntaxCheck = new vscode.EventEmitter<void>();
+  public readonly onDidStartSyntaxCheck = this._onDidStartSyntaxCheck.event;
+  private _onDidEndSyntaxCheck = new vscode.EventEmitter<void>();
+  public readonly onDidEndSyntaxCheck = this._onDidEndSyntaxCheck.event;
+  private tclshPath: string = 'tclsh';
+  private tclshAvailable: boolean | null = null;
+
+  private async runTclshScript(scriptFile: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
+    return new Promise(resolve => {
+      let stdout = '';
+      let stderr = '';
+      
+      // Log the command for debugging
+      const cmd = `${this.tclshPath} "${scriptFile}"`;
+      console.log(`[tclsh] Running: ${cmd}`);
+      
+      const child = spawn(this.tclshPath, [scriptFile], { stdio: 'pipe' });
+
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch { /* ignore */ }
+        resolve({ stdout, stderr: stderr || 'tclsh timed out', code: 124 });
+      }, timeoutMs);
+
+      child.on('error', err => {
+        clearTimeout(timer);
+        resolve({ stdout, stderr: err.message || 'Failed to start tclsh', code: 127 });
+      });
+
+      child.stdout.on('data', d => { stdout += d.toString(); });
+      child.stderr.on('data', d => { stderr += d.toString(); });
+      child.on('close', code => {
+        clearTimeout(timer);
+        console.log(`[tclsh] Exit code: ${code}`);
+        if (stdout) console.log(`[tclsh] stdout: ${stdout}`);
+        if (stderr) console.log(`[tclsh] stderr: ${stderr}`);
+        resolve({ stdout, stderr, code });
+      });
+    });
+  }
 
   activate(context: vscode.ExtensionContext) {
     this.buildIndex();
-    this.watcher = vscode.workspace.createFileSystemWatcher('**/*.tcl');
-    this.watcher.onDidCreate(uri => this.indexFile(uri));
-    this.watcher.onDidChange(uri => this.indexFile(uri));
-    this.watcher.onDidDelete(uri => this.removeFile(uri));
-    context.subscriptions.push(this.watcher as vscode.Disposable);
-
-    // read configured external paths and set watchers
+    // read configured external paths (used only on startup indexing)
     const cfg = vscode.workspace.getConfiguration('tcl');
     const external = cfg.get<string[]>('index.externalPaths') || [];
     if (external && external.length) this.setExternalPaths(external, context);
   }
 
   async buildIndex() {
+    this._onWillIndex.fire();
     this.index.clear();
     this.variableIndex.clear();
     this.procIndex.clear();
@@ -52,24 +99,7 @@ export class TclIndexer {
   }
 
   async setExternalPaths(paths: string[], context?: vscode.ExtensionContext) {
-    // dispose old watchers
-    for (const w of this.externalWatchers) { w.dispose(); }
-    this.externalWatchers = [];
     this.externalPaths = paths || [];
-
-    for (const p of this.externalPaths) {
-      try {
-        const pattern = `${p.replace(/\\/g, '/')}/**/*.tcl`;
-        const w = vscode.workspace.createFileSystemWatcher(pattern);
-        w.onDidCreate(uri => this.indexFile(uri));
-        w.onDidChange(uri => this.indexFile(uri));
-        w.onDidDelete(uri => this.removeFile(uri));
-        this.externalWatchers.push(w);
-        if (context) context.subscriptions.push(w as vscode.Disposable);
-      } catch (e) {
-        // ignore watcher creation errors
-      }
-    }
 
     // rebuild index to include newly added external files
     await this.buildIndex();
@@ -237,9 +267,90 @@ export class TclIndexer {
     // Note: don't fire _onDidIndex here as this is called from indexFile
   }
 
-  // Linting: detect duplicate definitions, unused variables, and bracket/brace mismatches
-  async lint(): Promise<Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }>> {
+  // Check if tclsh is available and cache the result
+  private async checkTclsh(): Promise<boolean> {
+    if (this.tclshAvailable !== null) return this.tclshAvailable;
+    
+    try {
+      const cfg = vscode.workspace.getConfiguration('tcl');
+      this.tclshPath = cfg.get<string>('runtime.tclshPath') || 'tclsh';
+      
+      const tmpFile = path.join(os.tmpdir(), `tclsh-check-${Date.now()}.tcl`);
+      fs.writeFileSync(tmpFile, 'puts [info patchlevel]');
+      const { stdout, stderr, code } = await this.runTclshScript(tmpFile, 3000);
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+      
+      const output = (stdout || stderr || '').trim();
+      this.tclshAvailable = code === 0 && output.length > 0;
+      return this.tclshAvailable;
+    } catch (e) {
+      this.tclshAvailable = false;
+      return false;
+    }
+  }
+
+  // Run tclsh syntax check on a file
+  private async checkSyntaxWithTclsh(uri: vscode.Uri, content: string): Promise<vscode.Diagnostic[]> {
+    const diagnostics: vscode.Diagnostic[] = [];
+
+    const tmpCheckFile = path.join(os.tmpdir(), `tclsh-check-${Date.now()}.tcl`);
+    const tmpScriptFile = path.join(os.tmpdir(), `tclsh-script-${Date.now()}.tcl`);
+    
+    try {
+      // Write the user's script to a temp file
+      fs.writeFileSync(tmpScriptFile, content);
+      
+      // Create a check script that sources the user's script
+      const checkScript = `if {[catch {
+  source ${JSON.stringify(tmpScriptFile)}
+} err]} {
+  if {[info exists ::errorInfo]} { puts stderr $::errorInfo } else { puts stderr $err }
+  exit 1
+}
+exit 0
+`;
+      fs.writeFileSync(tmpCheckFile, checkScript);
+      
+      // Log for debugging
+      console.log(`[tclsh] Syntax check temp files:`);
+      console.log(`[tclsh]   Script: ${tmpScriptFile}`);
+      console.log(`[tclsh]   Check:  ${tmpCheckFile}`);
+      console.log(`[tclsh]   Command to test: tclsh "${tmpCheckFile}"`);
+
+      const { stdout, stderr, code } = await this.runTclshScript(tmpCheckFile, 8000);
+      let output = (stderr && stderr.trim().length ? stderr : stdout).trim();
+      if (!output && code && code !== 0) output = `tclsh exited with code ${code}`;
+
+      if (output) {
+        const lines = output.split('\n');
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          const lineMatch = line.match(/line (\d+)/i);
+          const lineNum = lineMatch ? parseInt(lineMatch[1], 10) - 1 : 0;
+
+          const range = new vscode.Range(lineNum, 0, lineNum, 1000);
+          const diag = new vscode.Diagnostic(range, line.trim(), vscode.DiagnosticSeverity.Error);
+          diag.source = 'tclsh';
+          diagnostics.push(diag);
+          console.log(`[tclsh] Created diagnostic on line ${lineNum + 1}: ${line.trim()}`);
+        }
+        console.log(`[tclsh] Total diagnostics created: ${diagnostics.length}`);
+      }
+    } finally {
+      try { fs.unlinkSync(tmpCheckFile); } catch { /* ignore */ }
+      try { fs.unlinkSync(tmpScriptFile); } catch { /* ignore */ }
+    }
+    
+    return diagnostics;
+  }
+
+  // Linting: detect duplicate definitions, unused variables, and use tclsh for syntax checking
+  async lint(document?: vscode.TextDocument): Promise<Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }>> {
+    this._onDidStartLint.fire();
     const results: Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }> = [];
+    const cfg = vscode.workspace.getConfiguration('tcl');
+    const useTclsh = cfg.get<boolean>('runtime.enableSyntaxCheck') !== false;
 
     // duplicate procs/methods
     const checkDuplicates = (map: Map<string, any[]>) => {
@@ -256,68 +367,45 @@ export class TclIndexer {
     checkDuplicates(this.procIndex);
     checkDuplicates(this.methodIndex);
 
-    // bracket and brace matching for all files
-    const files = await vscode.workspace.findFiles('**/*.tcl');
-    const docTexts: Map<string, string> = new Map();
-    const docLines: Map<string, string[]> = new Map();
-    for (const f of files) {
-      try { 
-        const d = await vscode.workspace.openTextDocument(f); 
-        docTexts.set(f.toString(), d.getText()); 
-        docLines.set(f.toString(), d.getText().split(/\r?\n/));
-      } catch (e) { }
-    }
-
-    // check bracket/brace matching
-    for (const [uriStr, lines] of docLines.entries()) {
-      const uri = vscode.Uri.parse(uriStr);
-      const stack: Array<{ char: string; line: number; col: number }> = [];
-      
-      for (let lineNum = 0; lineNum < lines.length; lineNum++) {
-        const line = lines[lineNum];
-        for (let col = 0; col < line.length; col++) {
-          const ch = line[col];
-          
-          // skip characters inside strings (basic heuristic)
-          if (ch === '"') {
-            // find closing quote
-            let endQuote = line.indexOf('"', col + 1);
-            if (endQuote !== -1) {
-              col = endQuote;
-              continue;
-            }
-          }
-          
-          if (ch === '{' || ch === '[') {
-            stack.push({ char: ch, line: lineNum, col });
-          } else if (ch === '}' || ch === ']') {
-            if (stack.length === 0) {
-              const range = new vscode.Range(lineNum, col, lineNum, col + 1);
-              const diag = new vscode.Diagnostic(range, `Unmatched closing '${ch}'`, vscode.DiagnosticSeverity.Error);
-              results.push({ uri, diagnostics: [diag] });
-            } else {
-              const last = stack.pop()!;
-              const expected = last.char === '{' ? '}' : ']';
-              if (ch !== expected) {
-                const range = new vscode.Range(lineNum, col, lineNum, col + 1);
-                const diag = new vscode.Diagnostic(range, `Mismatched bracket: expected '${expected}' but found '${ch}'`, vscode.DiagnosticSeverity.Error);
-                results.push({ uri, diagnostics: [diag] });
-              }
-            }
-          }
+    // Use tclsh for syntax checking if available and enabled
+    const targetDocs: vscode.TextDocument[] = [];
+    if (document) {
+      targetDocs.push(document);
+    } else {
+      const files = await vscode.workspace.findFiles('**/*.tcl');
+      for (const file of files) {
+        try {
+          const doc = await vscode.workspace.openTextDocument(file);
+          targetDocs.push(doc);
+        } catch {
+          // ignore
         }
       }
-      
-      // report unclosed brackets/braces
-      for (const unclosed of stack) {
-        const range = new vscode.Range(unclosed.line, unclosed.col, unclosed.line, unclosed.col + 1);
-        const expected = unclosed.char === '{' ? '}' : ']';
-        const diag = new vscode.Diagnostic(range, `Unclosed '${unclosed.char}' (expected '${expected}')`, vscode.DiagnosticSeverity.Error);
-        results.push({ uri: vscode.Uri.parse(uriStr), diagnostics: [diag] });
+    }
+
+    if (useTclsh && await this.checkTclsh()) {
+      this._onDidStartSyntaxCheck.fire();
+      for (const doc of targetDocs) {
+        try {
+          const syntaxDiags = await this.checkSyntaxWithTclsh(doc.uri, doc.getText());
+          if (syntaxDiags.length > 0) {
+            results.push({ uri: doc.uri, diagnostics: syntaxDiags });
+          }
+        } catch (e) {
+          // ignore
+        }
       }
+      this._onDidEndSyntaxCheck.fire();
     }
 
     // unused variables: search for $name occurrences across workspace files
+    const docTexts: Map<string, string> = new Map();
+    for (const doc of targetDocs) {
+      try { 
+        docTexts.set(doc.uri.toString(), doc.getText()); 
+      } catch (e) { }
+    }
+
     const vars = Array.from(this.variableIndex.entries());
     for (const [name, arr] of vars) {
       let used = false;
@@ -346,6 +434,7 @@ export class TclIndexer {
     for (const [k, diags] of byUri.entries()) {
       out.push({ uri: vscode.Uri.parse(k), diagnostics: diags });
     }
+    this._onDidEndLint.fire();
     return out;
   }
 
