@@ -37,8 +37,8 @@ async provideHover(
       if (e.value) lines.push(`Value:\n\`\`\`\n${e.value}\n\`\`\``);
     }
   } else {
-    // fallback: check for procedure signatures
-    const procSigs = this.indexer.getProcSignatures(name);
+    // fallback: check for procedure signatures (respecting file namespace/imports)
+    const procSigs = this.indexer.getProcSignatures(name, document);
     if (procSigs.length) {
       lines.push(`**Procedure**: \`${name}\``);
 

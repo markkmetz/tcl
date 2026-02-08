@@ -8,14 +8,14 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
     this.indexer = indexer;
   }
 
-  provideDocumentSemanticTokens(document: vscode.TextDocument, token: vscode.CancellationToken): vscode.ProviderResult<vscode.SemanticTokens> {
+  async provideDocumentSemanticTokens(document: vscode.TextDocument, token: vscode.CancellationToken): Promise<vscode.SemanticTokens> {
     const builder = new vscode.SemanticTokensBuilder();
     const tokenTypeMap: Record<string, number> = { variable: 0, function: 1, parameter: 2, method: 3 };
 
     // highlight proc and method names and their parameters
-    const procs = this.indexer.listProcs();
+    const procs = await this.indexer.listProcs(undefined, document);
     for (const name of procs) {
-      const sigs = this.indexer.getProcSignatures(name);
+      const sigs = this.indexer.getProcSignatures(name, document);
       for (const s of sigs) {
         const line = s.loc.range.start.line;
         const lineText = document.lineAt(line).text;
@@ -56,7 +56,6 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       const col = v.loc.range.start.character;
       builder.push(line, col, v.name.length, tokenTypeMap['variable'], 0);
     }
-
     return builder.build();
   }
 

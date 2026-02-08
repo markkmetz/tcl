@@ -20,11 +20,46 @@ async provideCompletionItems(
   const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z0-9_:.]+/);
   const prefix = wordRange ? document.getText(wordRange) : '';
 
-  const procs = this.indexer.listProcs(prefix);
   const items: vscode.CompletionItem[] = [];
-
-  // add built-in commands that match the prefix (case-insensitive)
+  const MAX_GLOBAL_PROCS = 50;
   const prefixLower = prefix.toLowerCase();
+
+  // namespace-specific completion: user typed Namespace::partial or ::Namespace::partial
+  const nsMatch = prefix.match(/^(::)?([A-Za-z0-9_:]+)::([A-Za-z0-9_]*)$/);
+  if (nsMatch) {
+    const namespace = nsMatch[2].replace(/^::+/, '');
+    const partial = nsMatch[3] || '';
+    const nsProcs = this.indexer.listProcsInNamespace(namespace, partial, document);
+    for (const fq of nsProcs) {
+      const short = fq.split('::').pop() || fq;
+      const item = new vscode.CompletionItem(fq, vscode.CompletionItemKind.Function);
+      item.detail = `Tcl procedure in namespace ${namespace}`;
+      const sigs = this.indexer.getProcSignatures(fq, document);
+      if (sigs.length) {
+        const md = new vscode.MarkdownString();
+        md.appendMarkdown(`**Signature**\n\n`);
+        md.appendMarkdown(sigs.map(s => `- ${s.params.join(' ')} — ${vscode.workspace.asRelativePath(s.loc.uri)}:${s.loc.range.start.line + 1}`).join('\n'));
+        item.documentation = md;
+      }
+      item.insertText = new vscode.SnippetString(`${fq}$0`);
+      items.push(item);
+    }
+    return items;
+  }
+
+  // show namespaces first to avoid flooding completions
+  const nsList = this.indexer.listNamespaces();
+  const nsPrefix = prefix.split('::')[0] || '';
+  for (const ns of nsList) {
+    if (nsPrefix && !ns.startsWith(nsPrefix)) continue;
+    const nitem = new vscode.CompletionItem(`${ns}::`, vscode.CompletionItemKind.Module);
+    nitem.detail = 'Tcl namespace';
+    nitem.insertText = `${ns}::`;
+    // trigger suggestions after inserting the namespace so the namespace's functions appear immediately
+    nitem.command = { command: 'editor.action.triggerSuggest', title: 'Trigger Suggest' };
+    items.push(nitem);
+  }
+
   // first add snippet templates (proc, namespace, etc.)
   const snippetKeys = Object.keys(SNIPPETS).filter(k => prefix === '' || k.toLowerCase().startsWith(prefixLower));
   for (const key of snippetKeys) {
@@ -39,6 +74,8 @@ async provideCompletionItems(
     sitem.insertText = new vscode.SnippetString(meta.snippet);
     items.push(sitem);
   }
+
+  // add built-in commands that match the prefix (case-insensitive)
   const builtins = Object.keys(BUILTINS).filter(b => prefix === '' || b.toLowerCase().startsWith(prefixLower));
   for (const builtin of builtins) {
     const meta = BUILTINS[builtin];
@@ -65,11 +102,15 @@ async provideCompletionItems(
     items.push(bitem);
   }
 
+  // now add a limited number of global/local procs to avoid huge suggestion lists
+  const procs = await this.indexer.listProcs(prefix, document);
+  let added = 0;
   for (const procName of procs) {
+    if (added >= MAX_GLOBAL_PROCS) break;
     const item = new vscode.CompletionItem(procName, vscode.CompletionItemKind.Function);
 
     // get all signatures for documentation
-    const signatures = this.indexer.getProcSignatures(procName);
+    const signatures = this.indexer.getProcSignatures(procName, document);
     const procLines = signatures.map(sig => {
       const rel = vscode.workspace.asRelativePath(sig.loc.uri);
       const lineNum = sig.loc.range.start.line + 1;
@@ -98,6 +139,7 @@ async provideCompletionItems(
     }
 
     items.push(item);
+    added++;
   }
 
   return items;

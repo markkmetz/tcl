@@ -4,11 +4,12 @@ import { parseDefinitionLine } from './parser';
 export class TclIndexer {
   private index: Map<string, vscode.Location[]> = new Map();
   private variableIndex: Map<string, { loc: vscode.Location; value: string }[]> = new Map();
-  private procIndex: Map<string, { loc: vscode.Location; params: string[] }[]> = new Map();
-  private methodIndex: Map<string, { loc: vscode.Location; params: string[] }[]> = new Map();
+  private procIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; namespace?: string }[]> = new Map();
+  private methodIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; namespace?: string }[]> = new Map();
   private watcher?: vscode.FileSystemWatcher;
   private externalPaths: string[] = [];
   private externalWatchers: vscode.FileSystemWatcher[] = [];
+  private fileImports: Map<string, { fileNamespace?: string; importedNamespaces: Set<string>; importedProcs: Set<string> }> = new Map();
   private _onDidIndex = new vscode.EventEmitter<void>();
   public readonly onDidIndex = this._onDidIndex.event;
 
@@ -76,31 +77,80 @@ export class TclIndexer {
     const doc = await vscode.workspace.openTextDocument(uri);
     const lines = doc.getText().split(/\r?\n/);
 
+    // track current namespace and imports while scanning file
+    const importedNamespaces = new Set<string>();
+    const importedProcs = new Set<string>();
+    let namespaceStack: string[] = [];
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+
+      // detect namespace eval start: namespace eval NAME {
+      const nsStart = line.match(/^\s*namespace\s+eval\s+([A-Za-z0-9_:]+)\s*\{/);
+      if (nsStart) {
+        namespaceStack.push(nsStart[1].replace(/^::+/, ''));
+      }
+
+      // detect namespace import statements
+      const nsImport = line.match(/^\s*namespace\s+import\s+(.*)$/);
+      if (nsImport && nsImport[1]) {
+        const parts = nsImport[1].trim().split(/\s+/);
+        for (const p of parts) {
+          if (p.endsWith('::*')) {
+            const ns = p.replace(/::\*+$/, '');
+            if (ns) importedNamespaces.add(ns.replace(/^::+/, ''));
+          } else if (p.includes('::')) {
+            // explicit fq proc import
+            importedProcs.add(p.replace(/^::+/, ''));
+          }
+        }
+      }
 
       // match both 'proc' and 'method'
       const def = parseDefinitionLine(line);
       if (def) {
         const { type, name, params } = def;
-        const pos = new vscode.Position(i, line.indexOf(name));
+        // normalize leading :: in definitions
+        const cleanName = name.replace(/^::+/, '');
+        // determine namespace for this definition
+        let simpleName = cleanName;
+        let defNamespace: string | undefined;
+        if (cleanName.includes('::')) {
+          const parts = cleanName.split('::').filter(Boolean);
+          defNamespace = parts.slice(0, -1).join('::');
+          simpleName = parts[parts.length - 1];
+        } else if (namespaceStack.length) {
+          defNamespace = namespaceStack[namespaceStack.length - 1];
+        }
+
+        const fqName = defNamespace ? `${defNamespace}::${simpleName}` : simpleName;
+        const pos = new vscode.Position(i, line.indexOf(simpleName));
         const loc = new vscode.Location(uri, pos);
 
-        // general index for hover
-        const arr = this.index.get(name) || [];
+        // general index for hover (use simple name and fqName)
+        const arr = this.index.get(simpleName) || [];
         const exists = arr.findIndex(l => l.uri.toString() === uri.toString() && l.range.start.line === i);
         if (exists === -1) {
           arr.push(loc);
-          this.index.set(name, arr);
+          this.index.set(simpleName, arr);
+        }
+        // also index by fqName (normalized) for direct lookup
+        if (defNamespace) {
+          const normalizedFq = fqName.replace(/^::+/, '');
+          const farr = this.index.get(normalizedFq) || [];
+          if (!farr.find(l => l.uri.toString() === uri.toString() && l.range.start.line === i)) {
+            farr.push(loc);
+            this.index.set(normalizedFq, farr);
+          }
         }
 
-        // proc/method-specific index
+        // proc/method-specific index (keyed by simple name)
         const indexMap = type === 'proc' ? this.procIndex : this.methodIndex;
-        const pArr = indexMap.get(name) || [];
+        const pArr = indexMap.get(simpleName) || [];
         const pExists = pArr.findIndex(p => p.loc.uri.toString() === uri.toString() && p.loc.range.start.line === i);
         if (pExists === -1) {
-          pArr.push({ loc, params });
-          indexMap.set(name, pArr);
+          pArr.push({ loc, params, fqName: fqName.replace(/^::+/, ''), namespace: defNamespace });
+          indexMap.set(simpleName, pArr);
         }
       }
 
@@ -119,7 +169,15 @@ export class TclIndexer {
           this.variableIndex.set(vname, varArr);
         }
       }
+
+      // naive namespace block end detection - pop on a closing brace line
+      const nsEnd = line.match(/^\s*}\s*$/);
+      if (nsEnd && namespaceStack.length) namespaceStack.pop();
     }
+
+    // store imports/namespace info for this file
+    const fileKey = uri.toString();
+    this.fileImports.set(fileKey, { fileNamespace: namespaceStack[namespaceStack.length - 1], importedNamespaces, importedProcs });
   } catch (e) {
     // ignore unreadable files
   }
@@ -163,7 +221,7 @@ export class TclIndexer {
     const results: Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }> = [];
 
     // duplicate procs/methods
-    const checkDuplicates = (map: Map<string, { loc: vscode.Location; params: string[] }[]>) => {
+    const checkDuplicates = (map: Map<string, any[]>) => {
       for (const [name, arr] of map.entries()) {
         if (arr.length > 1) {
           for (const entry of arr) {
@@ -216,10 +274,45 @@ export class TclIndexer {
   }
 
   async lookup(name: string): Promise<vscode.Location[]> {
-    const exact = this.index.get(name);
-    if (exact && exact.length) return exact;
-    const simple = name.split('::').pop() || name;
-    return this.index.get(simple) || [];
+    return this.lookupInContext(name, undefined);
+  }
+
+  // lookup with optional document context (to respect imports/namespaces)
+  async lookupInContext(name: string, document?: vscode.TextDocument): Promise<vscode.Location[]> {
+    // normalize and if fq name provided
+    const normalized = name.replace(/^::+/, '');
+    if (normalized.includes('::')) {
+      return this.index.get(normalized) || [];
+    }
+
+    const simple = normalized.split('::').pop() || normalized;
+    const entries: vscode.Location[] = [];
+
+    // gather matching proc/method entries and filter by context
+    const parr = this.procIndex.get(simple) || [];
+    const marr = this.methodIndex.get(simple) || [];
+
+    let fileInfo = document ? this.fileImports.get(document.uri.toString()) : undefined;
+
+    const includeEntry = (entry: { fqName: string; namespace?: string }) => {
+      if (!entry.namespace) return true;
+      if (!fileInfo) return true;
+      if (fileInfo.fileNamespace && fileInfo.fileNamespace === entry.namespace) return true;
+      if (fileInfo.importedProcs.has(entry.fqName)) return true;
+      if (fileInfo.importedNamespaces.has(entry.namespace)) return true;
+      return false;
+    };
+
+    for (const p of parr) if (includeEntry(p)) entries.push(p.loc);
+    for (const m of marr) if (includeEntry(m)) entries.push(m.loc);
+
+    // fallback to general index entries (simple name or fq)
+    if (!entries.length) {
+      const exact = this.index.get(simple) || [];
+      entries.push(...exact);
+    }
+
+    return entries;
   }
 
   async lookupVariable(name: string): Promise<{ loc: vscode.Location; value: string }[]> {
@@ -227,6 +320,89 @@ export class TclIndexer {
     if (exact.length) return exact;
     const simple = name.split('::').pop() || name;
     return this.variableIndex.get(simple) || [];
+  }
+
+  // return list of indexed procs available in given document (respect namespaces/imports)
+  async listProcs(prefix?: string, document?: vscode.TextDocument): Promise<string[]> {
+    const results: string[] = [];
+    const seen = new Set<string>();
+
+    let fileInfo: { fileNamespace?: string; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
+    if (document) fileInfo = this.fileImports.get(document.uri.toString());
+
+    const includeEntry = (entry: { fqName: string; namespace?: string }) => {
+      // always include global (no namespace)
+      if (!entry.namespace) return true;
+      // if no document context, include
+      if (!fileInfo) return true;
+      // same namespace
+      if (fileInfo.fileNamespace && fileInfo.fileNamespace === entry.namespace) return true;
+      // imported explicit proc
+      if (fileInfo.importedProcs.has(entry.fqName)) return true;
+      // imported namespace wildcard
+      if (fileInfo.importedNamespaces.has(entry.namespace)) return true;
+      return false;
+    };
+
+    for (const [name, arr] of this.procIndex.entries()) {
+      if (prefix && !name.startsWith(prefix)) continue;
+      for (const p of arr) {
+        if (!includeEntry(p)) continue;
+        if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
+      }
+    }
+    for (const [name, arr] of this.methodIndex.entries()) {
+      if (prefix && !name.startsWith(prefix)) continue;
+      for (const p of arr) {
+        if (!includeEntry(p)) continue;
+        if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
+      }
+    }
+    return results;
+  }
+
+  // list all known namespaces (normalized, excluding empty/global)
+  listNamespaces(): string[] {
+    const set = new Set<string>();
+    for (const arr of this.procIndex.values()) {
+      for (const p of arr) if (p.namespace) set.add(p.namespace);
+    }
+    for (const arr of this.methodIndex.values()) {
+      for (const p of arr) if (p.namespace) set.add(p.namespace);
+    }
+    return Array.from(set).sort();
+  }
+
+  // list procs inside a given namespace (fq namespace name without leading ::)
+  listProcsInNamespace(namespace: string, prefix?: string, document?: vscode.TextDocument): string[] {
+    const results: string[] = [];
+    const seen = new Set<string>();
+    const ns = namespace.replace(/^::+/, '');
+    const pref = prefix || '';
+
+    const include = (p: { fqName: string; namespace?: string }) => {
+      if (!p.namespace) return false;
+      return p.namespace === ns;
+    };
+
+    for (const arr of this.procIndex.values()) {
+      for (const p of arr) {
+        if (!include(p)) continue;
+        const short = p.fqName.split('::').pop() || p.fqName;
+        if (pref && !short.startsWith(pref)) continue;
+        if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
+      }
+    }
+    for (const arr of this.methodIndex.values()) {
+      for (const p of arr) {
+        if (!include(p)) continue;
+        const short = p.fqName.split('::').pop() || p.fqName;
+        if (pref && !short.startsWith(pref)) continue;
+        if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
+      }
+    }
+
+    return results.sort();
   }
 
   // return all variables (optionally filtered by prefix)
@@ -241,27 +417,40 @@ export class TclIndexer {
     return results;
   }
 
-  // return list of indexed procs (names)
-  listProcs(prefix?: string): string[] {
-    const results: string[] = [];
-    const seen = new Set<string>();
-    for (const name of this.procIndex.keys()) {
-      if (prefix && !name.startsWith(prefix)) continue;
-      if (!seen.has(name)) { seen.add(name); results.push(name); }
+  getProcSignatures(name: string, document?: vscode.TextDocument): Array<{ params: string[]; loc: vscode.Location; fqName: string }> {
+    const results: Array<{ params: string[]; loc: vscode.Location; fqName: string }> = [];
+    // if fq name requested
+    if (name.includes('::')) {
+      const simple = name.split('::').pop() || name;
+      const parr = this.procIndex.get(simple) || [];
+      for (const p of parr) {
+        if (p.fqName === name) results.push({ params: p.params, loc: p.loc, fqName: p.fqName });
+      }
+      const marr = this.methodIndex.get(simple) || [];
+      for (const m of marr) {
+        if (m.fqName === name) results.push({ params: m.params, loc: m.loc, fqName: m.fqName });
+      }
+      return results;
     }
-    for (const name of this.methodIndex.keys()) {
-      if (prefix && !name.startsWith(prefix)) continue;
-      if (!seen.has(name)) { seen.add(name); results.push(name); }
-    }
-    return results;
-  }
 
-  getProcSignatures(name: string): Array<{ params: string[]; loc: vscode.Location }> {
-    const results: Array<{ params: string[]; loc: vscode.Location }> = [];
-    const parr = this.procIndex.get(name) || [];
-    for (const p of parr) results.push({ params: p.params, loc: p.loc });
-    const marr = this.methodIndex.get(name) || [];
-    for (const m of marr) results.push({ params: m.params, loc: m.loc });
+    // otherwise filter by document context
+    let fileInfo: { fileNamespace?: string; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
+    if (document) fileInfo = this.fileImports.get(document.uri.toString());
+
+    const includeEntry = (entry: { fqName: string; namespace?: string }) => {
+      if (!entry.namespace) return true;
+      if (!fileInfo) return true;
+      if (fileInfo.fileNamespace && fileInfo.fileNamespace === entry.namespace) return true;
+      if (fileInfo.importedProcs.has(entry.fqName)) return true;
+      if (fileInfo.importedNamespaces.has(entry.namespace)) return true;
+      return false;
+    };
+
+    const simple = name.split('::').pop() || name;
+    const parr = this.procIndex.get(simple) || [];
+    for (const p of parr) if (includeEntry(p)) results.push({ params: p.params, loc: p.loc, fqName: p.fqName });
+    const marr = this.methodIndex.get(simple) || [];
+    for (const m of marr) if (includeEntry(m)) results.push({ params: m.params, loc: m.loc, fqName: m.fqName });
     return results;
   }
 }
