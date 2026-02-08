@@ -322,20 +322,19 @@ exit 0
       if (!output && code && code !== 0) output = `tclsh exited with code ${code}`;
 
       if (output) {
+        // Parse the entire error output to find the line number
+        const lineMatch = output.match(/line (\d+)/i);
+        const lineNum = lineMatch ? parseInt(lineMatch[1], 10) - 1 : 0;
+
+        // Extract the main error message (first line)
         const lines = output.split('\n');
-        for (const line of lines) {
-          if (!line.trim()) continue;
-
-          const lineMatch = line.match(/line (\d+)/i);
-          const lineNum = lineMatch ? parseInt(lineMatch[1], 10) - 1 : 0;
-
-          const range = new vscode.Range(lineNum, 0, lineNum, 1000);
-          const diag = new vscode.Diagnostic(range, line.trim(), vscode.DiagnosticSeverity.Error);
-          diag.source = 'tclsh';
-          diagnostics.push(diag);
-          console.log(`[tclsh] Created diagnostic on line ${lineNum + 1}: ${line.trim()}`);
-        }
-        console.log(`[tclsh] Total diagnostics created: ${diagnostics.length}`);
+        const errorMessage = lines[0].trim();
+        
+        const range = new vscode.Range(lineNum, 0, lineNum, 1000);
+        const diag = new vscode.Diagnostic(range, errorMessage, vscode.DiagnosticSeverity.Error);
+        diag.source = 'tclsh';
+        diagnostics.push(diag);
+        console.log(`[tclsh] Created diagnostic on line ${lineNum + 1}: ${errorMessage}`);
       }
     } finally {
       try { fs.unlinkSync(tmpCheckFile); } catch { /* ignore */ }
