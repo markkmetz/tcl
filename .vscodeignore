@@ -1,0 +1,11 @@
+.git
+.gitignore
+.vscode
+node_modules
+test
+*.test.ts
+*.test.js
+tsconfig.json
+webpack.config.js
+.nvmrc
+.DS_Store
