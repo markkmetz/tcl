@@ -237,7 +237,7 @@ export class TclIndexer {
     // Note: don't fire _onDidIndex here as this is called from indexFile
   }
 
-  // Linting: detect duplicate definitions and unused variables
+  // Linting: detect duplicate definitions, unused variables, and bracket/brace mismatches
   async lint(): Promise<Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }>> {
     const results: Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }> = [];
 
@@ -256,14 +256,69 @@ export class TclIndexer {
     checkDuplicates(this.procIndex);
     checkDuplicates(this.methodIndex);
 
-    // unused variables: search for $name occurrences across workspace files
-    const vars = Array.from(this.variableIndex.entries());
+    // bracket and brace matching for all files
     const files = await vscode.workspace.findFiles('**/*.tcl');
     const docTexts: Map<string, string> = new Map();
+    const docLines: Map<string, string[]> = new Map();
     for (const f of files) {
-      try { const d = await vscode.workspace.openTextDocument(f); docTexts.set(f.toString(), d.getText()); } catch (e) { }
+      try { 
+        const d = await vscode.workspace.openTextDocument(f); 
+        docTexts.set(f.toString(), d.getText()); 
+        docLines.set(f.toString(), d.getText().split(/\r?\n/));
+      } catch (e) { }
     }
 
+    // check bracket/brace matching
+    for (const [uriStr, lines] of docLines.entries()) {
+      const uri = vscode.Uri.parse(uriStr);
+      const stack: Array<{ char: string; line: number; col: number }> = [];
+      
+      for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+        const line = lines[lineNum];
+        for (let col = 0; col < line.length; col++) {
+          const ch = line[col];
+          
+          // skip characters inside strings (basic heuristic)
+          if (ch === '"') {
+            // find closing quote
+            let endQuote = line.indexOf('"', col + 1);
+            if (endQuote !== -1) {
+              col = endQuote;
+              continue;
+            }
+          }
+          
+          if (ch === '{' || ch === '[') {
+            stack.push({ char: ch, line: lineNum, col });
+          } else if (ch === '}' || ch === ']') {
+            if (stack.length === 0) {
+              const range = new vscode.Range(lineNum, col, lineNum, col + 1);
+              const diag = new vscode.Diagnostic(range, `Unmatched closing '${ch}'`, vscode.DiagnosticSeverity.Error);
+              results.push({ uri, diagnostics: [diag] });
+            } else {
+              const last = stack.pop()!;
+              const expected = last.char === '{' ? '}' : ']';
+              if (ch !== expected) {
+                const range = new vscode.Range(lineNum, col, lineNum, col + 1);
+                const diag = new vscode.Diagnostic(range, `Mismatched bracket: expected '${expected}' but found '${ch}'`, vscode.DiagnosticSeverity.Error);
+                results.push({ uri, diagnostics: [diag] });
+              }
+            }
+          }
+        }
+      }
+      
+      // report unclosed brackets/braces
+      for (const unclosed of stack) {
+        const range = new vscode.Range(unclosed.line, unclosed.col, unclosed.line, unclosed.col + 1);
+        const expected = unclosed.char === '{' ? '}' : ']';
+        const diag = new vscode.Diagnostic(range, `Unclosed '${unclosed.char}' (expected '${expected}')`, vscode.DiagnosticSeverity.Error);
+        results.push({ uri: vscode.Uri.parse(uriStr), diagnostics: [diag] });
+      }
+    }
+
+    // unused variables: search for $name occurrences across workspace files
+    const vars = Array.from(this.variableIndex.entries());
     for (const [name, arr] of vars) {
       let used = false;
       const searchPattern = new RegExp(`\\$${name}\\b`);
