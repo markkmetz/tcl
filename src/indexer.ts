@@ -5,6 +5,8 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as https from 'https';
+import * as http from 'http';
 
 const execAsync = promisify(exec);
 
@@ -289,6 +291,77 @@ export class TclIndexer {
     }
   }
 
+  // Check syntax using remote service (for container environments)
+  private async checkSyntaxRemote(uri: vscode.Uri, content: string): Promise<vscode.Diagnostic[]> {
+    const diagnostics: vscode.Diagnostic[] = [];
+    
+    try {
+      const cfg = vscode.workspace.getConfiguration('tcl');
+      const remoteUrl = cfg.get<string>('runtime.remoteUrl') || 'http://localhost:8765/check';
+      
+      const urlObj = new URL(remoteUrl);
+      const isHttps = urlObj.protocol === 'https:';
+      const httpModule = isHttps ? https : http;
+      
+      const response = await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve, reject) => {
+        const postData = Buffer.from(content, 'utf-8');
+        
+        const options = {
+          hostname: urlObj.hostname,
+          port: urlObj.port || (isHttps ? 443 : 80),
+          path: urlObj.pathname,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain',
+            'Content-Length': postData.length
+          },
+          timeout: 10000
+        };
+        
+        const req = httpModule.request(options, res => {
+          let data = '';
+          res.on('data', chunk => { data += chunk; });
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(data);
+              resolve({ stdout: json.stdout || '', stderr: json.stderr || '', exitCode: json.exitCode || 0 });
+            } catch (e) {
+              reject(new Error('Invalid JSON response from remote service'));
+            }
+          });
+        });
+        
+        req.on('error', reject);
+        req.on('timeout', () => {
+          req.destroy();
+          reject(new Error('Remote syntax check timeout'));
+        });
+        
+        req.write(postData);
+        req.end();
+      });
+      
+      let output = (response.stderr && response.stderr.trim().length ? response.stderr : response.stdout).trim();
+      
+      if (output) {
+        const lineMatch = output.match(/line (\d+)/i);
+        const lineNum = lineMatch ? parseInt(lineMatch[1], 10) - 1 : 0;
+        const lines = output.split('\n');
+        const errorMessage = lines[0].trim();
+        
+        const range = new vscode.Range(lineNum, 0, lineNum, 1000);
+        const diag = new vscode.Diagnostic(range, errorMessage, vscode.DiagnosticSeverity.Error);
+        diag.source = 'tclsh-remote';
+        diagnostics.push(diag);
+        console.log(`[tclsh-remote] Created diagnostic on line ${lineNum + 1}: ${errorMessage}`);
+      }
+    } catch (e: any) {
+      console.error('[tclsh-remote] Error:', e.message);
+    }
+    
+    return diagnostics;
+  }
+
   // Run tclsh syntax check on a file
   private async checkSyntaxWithTclsh(uri: vscode.Uri, content: string): Promise<vscode.Diagnostic[]> {
     const diagnostics: vscode.Diagnostic[] = [];
@@ -382,19 +455,38 @@ exit 0
       }
     }
 
-    if (useTclsh && await this.checkTclsh()) {
-      this._onDidStartSyntaxCheck.fire();
-      for (const doc of targetDocs) {
-        try {
-          const syntaxDiags = await this.checkSyntaxWithTclsh(doc.uri, doc.getText());
-          if (syntaxDiags.length > 0) {
-            results.push({ uri: doc.uri, diagnostics: syntaxDiags });
+    if (useTclsh) {
+      const useRemote = cfg.get<boolean>('runtime.useRemote') === true;
+      
+      if (useRemote) {
+        // Use remote syntax checking
+        this._onDidStartSyntaxCheck.fire();
+        for (const doc of targetDocs) {
+          try {
+            const syntaxDiags = await this.checkSyntaxRemote(doc.uri, doc.getText());
+            if (syntaxDiags.length > 0) {
+              results.push({ uri: doc.uri, diagnostics: syntaxDiags });
+            }
+          } catch (e) {
+            // ignore
           }
-        } catch (e) {
-          // ignore
         }
+        this._onDidEndSyntaxCheck.fire();
+      } else if (await this.checkTclsh()) {
+        // Use local tclsh
+        this._onDidStartSyntaxCheck.fire();
+        for (const doc of targetDocs) {
+          try {
+            const syntaxDiags = await this.checkSyntaxWithTclsh(doc.uri, doc.getText());
+            if (syntaxDiags.length > 0) {
+              results.push({ uri: doc.uri, diagnostics: syntaxDiags });
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+        this._onDidEndSyntaxCheck.fire();
       }
-      this._onDidEndSyntaxCheck.fire();
     }
 
     // unused variables: search for $name occurrences across workspace files

@@ -3,7 +3,7 @@
   "publisher": "markkmetz",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "repository": {
     "type": "git",
     "url": "https://github.com/markkmetz/tcl.git"
@@ -41,7 +41,7 @@
     ],
     "configuration": {
       "type": "object",
-      "title": "Tcl Extension Settings",
+      "title": "Mark's TCL Extension",
       "properties": {
         "tcl.features.gotoDefinition": {
           "type": "boolean",
@@ -90,6 +90,16 @@
           "type": "boolean",
           "default": true,
           "description": "Enable runtime syntax checking using tclsh."
+        },
+        "tcl.runtime.useRemote": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use remote syntax check service instead of local tclsh (useful for container environments)."
+        },
+        "tcl.runtime.remoteUrl": {
+          "type": "string",
+          "default": "http://localhost:8765/check",
+          "description": "URL of remote TCL syntax check service."
         }
       }
     },
