@@ -26,6 +26,16 @@
         ]
       }
     ],
+    "grammars": [
+      {
+        "language": "tcl",
+        "scopeName": "source.tcl",
+        "path": "./syntaxes/tcl.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "tcl": "./language-configuration.json"
+    },
     "keybindings": [
       {
         "command": "editor.action.revealDefinition",

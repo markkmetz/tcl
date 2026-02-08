@@ -19,9 +19,14 @@ export function activate(context: vscode.ExtensionContext) {
   const completionProvider = new TclCompletionProvider(indexer);
   const completionDisposable = vscode.languages.registerCompletionItemProvider({ language: 'tcl' }, completionProvider, '(');
   context.subscriptions.push(completionDisposable);
-  const signatureProvider = new (require('./signatureProvider').TclSignatureProvider)(indexer);
-  const sigDisposable = vscode.languages.registerSignatureHelpProvider({ language: 'tcl' }, signatureProvider, '(', ',');
-  context.subscriptions.push(sigDisposable);
+    const signatureProvider = new (require('./signatureProvider').TclSignatureProvider)(indexer);
+    const sigDisposable = vscode.languages.registerSignatureHelpProvider({ language: 'tcl' }, signatureProvider, '(', ',');
+    context.subscriptions.push(sigDisposable);
+    // semantic tokens (type-aware highlighting)
+    const legend = new vscode.SemanticTokensLegend(['variable', 'function', 'parameter', 'method'], []);
+    const semProvider = new (require('./semanticProvider').TclSemanticProvider)(indexer);
+    const semDisposable = vscode.languages.registerDocumentSemanticTokensProvider({ language: 'tcl' }, semProvider, legend);
+    context.subscriptions.push(semDisposable);
 }
 
 export function deactivate() {}
