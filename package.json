@@ -1,7 +1,7 @@
 {
-  "name": "tcl-goto",
-  "displayName": "Tcl Go To Definition",
-  "description": "Provide F12 Go To Definition for Tcl files",
+  "name": "marks-tcl-extension",
+  "displayName": "Mark's TCL extension",
+  "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.60.0"
@@ -23,7 +23,8 @@
         "aliases": [
           "Tcl",
           "tcl"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
@@ -34,7 +35,47 @@
       }
     ],
     "configuration": {
-      "tcl": "./language-configuration.json"
+      "type": "object",
+      "title": "Tcl Extension Settings",
+      "properties": {
+        "tcl.features.gotoDefinition": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Go To Definition (F12) for Tcl procs/methods."
+        },
+        "tcl.features.hover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable hover preview for variables and procedures."
+        },
+        "tcl.features.completion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable completion suggestions for Tcl procs/methods."
+        },
+        "tcl.features.signatureHelp": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable signature help when typing procedure calls."
+        },
+        "tcl.features.semanticTokens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic (type-aware) syntax highlighting."
+        },
+        "tcl.features.lint": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable lint diagnostics (duplicates, unused variables)."
+        }
+        ,
+        "tcl.index.externalPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional filesystem folders (absolute paths) to index for Tcl files."
+        }
+      }
     },
     "keybindings": [
       {

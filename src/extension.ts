@@ -3,45 +3,100 @@ import { TclDefinitionProvider } from './definitionProvider';
 import { TclIndexer } from './indexer';
 import { TclPreviewProvider } from './previewProvider';
 import { TclCompletionProvider } from './completionProvider';
+import { TclSignatureProvider } from './signatureProvider';
+import { TclSemanticProvider } from './semanticProvider';
 
 export function activate(context: vscode.ExtensionContext) {
   const indexer = new TclIndexer();
   indexer.activate(context);
-  indexer.activate(context);
-  const diagnostics = vscode.languages.createDiagnosticCollection('tcl');
-  context.subscriptions.push(diagnostics);
 
-  const runLint = async () => {
-    const lintResults = await indexer.lint();
-    diagnostics.clear();
-    for (const r of lintResults) {
-      diagnostics.set(r.uri, r.diagnostics);
-    }
+  // disposables for optional features
+  let defDisposable: vscode.Disposable | undefined;
+  let hoverDisposable: vscode.Disposable | undefined;
+  let completionDisposable: vscode.Disposable | undefined;
+  let sigDisposable: vscode.Disposable | undefined;
+  let semDisposable: vscode.Disposable | undefined;
+  let diagnostics: vscode.DiagnosticCollection | undefined;
+
+  const config = () => vscode.workspace.getConfiguration();
+
+  const registerProviders = async () => {
+    const cfg = config().get('tcl.features') as any || {};
+
+    // definitions
+    if (cfg.gotoDefinition !== false) {
+      if (!defDisposable) {
+        const defProvider = new TclDefinitionProvider(indexer);
+        defDisposable = vscode.languages.registerDefinitionProvider({ language: 'tcl' }, defProvider);
+        context.subscriptions.push(defDisposable);
+      }
+    } else if (defDisposable) { defDisposable.dispose(); defDisposable = undefined; }
+
+    // hover
+    if (cfg.hover !== false) {
+      if (!hoverDisposable) {
+        const hoverProvider = new TclPreviewProvider(indexer);
+        hoverDisposable = vscode.languages.registerHoverProvider({ language: 'tcl' }, hoverProvider);
+        context.subscriptions.push(hoverDisposable);
+      }
+    } else if (hoverDisposable) { hoverDisposable.dispose(); hoverDisposable = undefined; }
+
+    // completion
+    if (cfg.completion !== false) {
+      if (!completionDisposable) {
+        const completionProvider = new TclCompletionProvider(indexer);
+        completionDisposable = vscode.languages.registerCompletionItemProvider({ language: 'tcl' }, completionProvider, '(');
+        context.subscriptions.push(completionDisposable);
+      }
+    } else if (completionDisposable) { completionDisposable.dispose(); completionDisposable = undefined; }
+
+    // signature help
+    if (cfg.signatureHelp !== false) {
+      if (!sigDisposable) {
+        const signatureProvider = new TclSignatureProvider(indexer);
+        sigDisposable = vscode.languages.registerSignatureHelpProvider({ language: 'tcl' }, signatureProvider, '(', ',');
+        context.subscriptions.push(sigDisposable);
+      }
+    } else if (sigDisposable) { sigDisposable.dispose(); sigDisposable = undefined; }
+
+    // semantic tokens
+    if (cfg.semanticTokens !== false) {
+      if (!semDisposable) {
+        const legend = new vscode.SemanticTokensLegend(['variable', 'function', 'parameter', 'method'], []);
+        const semProvider = new TclSemanticProvider(indexer);
+        semDisposable = vscode.languages.registerDocumentSemanticTokensProvider({ language: 'tcl' }, semProvider, legend);
+        context.subscriptions.push(semDisposable);
+      }
+    } else if (semDisposable) { semDisposable.dispose(); semDisposable = undefined; }
+
+    // lint diagnostics
+    if (cfg.lint !== false) {
+      if (!diagnostics) {
+        diagnostics = vscode.languages.createDiagnosticCollection('tcl');
+        context.subscriptions.push(diagnostics);
+      }
+      const runLint = async () => {
+        const lintResults = await indexer.lint();
+        diagnostics!.clear();
+        for (const r of lintResults) diagnostics!.set(r.uri, r.diagnostics);
+      };
+      // initial and on index updates
+      runLint();
+      indexer.onDidIndex(runLint, null, context.subscriptions);
+    } else if (diagnostics) { diagnostics.clear(); diagnostics.dispose(); diagnostics = undefined; }
   };
 
-  // initial lint and whenever the index changes
-  runLint();
-  indexer.onDidIndex(runLint, null, context.subscriptions);
+  // initial registration
+  registerProviders();
 
-  const defProvider = new TclDefinitionProvider(indexer);
-  const defDisposable = vscode.languages.registerDefinitionProvider({ language: 'tcl' }, defProvider);
-  context.subscriptions.push(defDisposable);
-
-  const hoverProvider = new TclPreviewProvider(indexer);
-  const hoverDisposable = vscode.languages.registerHoverProvider({ language: 'tcl' }, hoverProvider);
-  context.subscriptions.push(hoverDisposable);
-
-  const completionProvider = new TclCompletionProvider(indexer);
-  const completionDisposable = vscode.languages.registerCompletionItemProvider({ language: 'tcl' }, completionProvider, '(');
-  context.subscriptions.push(completionDisposable);
-    const signatureProvider = new (require('./signatureProvider').TclSignatureProvider)(indexer);
-    const sigDisposable = vscode.languages.registerSignatureHelpProvider({ language: 'tcl' }, signatureProvider, '(', ',');
-    context.subscriptions.push(sigDisposable);
-    // semantic tokens (type-aware highlighting)
-    const legend = new vscode.SemanticTokensLegend(['variable', 'function', 'parameter', 'method'], []);
-    const semProvider = new (require('./semanticProvider').TclSemanticProvider)(indexer);
-    const semDisposable = vscode.languages.registerDocumentSemanticTokensProvider({ language: 'tcl' }, semProvider, legend);
-    context.subscriptions.push(semDisposable);
+  // respond to configuration changes
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+    if (e.affectsConfiguration('tcl.features')) registerProviders();
+    if (e.affectsConfiguration('tcl.index.externalPaths')) {
+      const external = vscode.workspace.getConfiguration('tcl').get<string[]>('index.externalPaths') || [];
+      indexer.setExternalPaths(external, context);
+    }
+  }));
 }
 
 export function deactivate() {}

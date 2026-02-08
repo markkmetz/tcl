@@ -7,6 +7,8 @@ export class TclIndexer {
   private procIndex: Map<string, { loc: vscode.Location; params: string[] }[]> = new Map();
   private methodIndex: Map<string, { loc: vscode.Location; params: string[] }[]> = new Map();
   private watcher?: vscode.FileSystemWatcher;
+  private externalPaths: string[] = [];
+  private externalWatchers: vscode.FileSystemWatcher[] = [];
   private _onDidIndex = new vscode.EventEmitter<void>();
   public readonly onDidIndex = this._onDidIndex.event;
 
@@ -17,14 +19,56 @@ export class TclIndexer {
     this.watcher.onDidChange(uri => this.indexFile(uri));
     this.watcher.onDidDelete(uri => this.removeFile(uri));
     context.subscriptions.push(this.watcher as vscode.Disposable);
+
+    // read configured external paths and set watchers
+    const cfg = vscode.workspace.getConfiguration('tcl');
+    const external = cfg.get<string[]>('index.externalPaths') || [];
+    if (external && external.length) this.setExternalPaths(external, context);
   }
 
   async buildIndex() {
     this.index.clear();
     this.variableIndex.clear();
     const files = await vscode.workspace.findFiles('**/*.tcl');
-    await Promise.all(files.map(f => this.indexFile(f)));
+    const allFiles = [...files];
+
+    // include external paths if configured
+    for (const p of this.externalPaths) {
+      try {
+        const rp = new vscode.RelativePattern(p, '**/*.tcl');
+        const extFiles = await vscode.workspace.findFiles(rp);
+        allFiles.push(...extFiles);
+      } catch (e) {
+        // ignore invalid paths
+      }
+    }
+
+    await Promise.all(allFiles.map(f => this.indexFile(f)));
     this._onDidIndex.fire();
+  }
+
+  async setExternalPaths(paths: string[], context?: vscode.ExtensionContext) {
+    // dispose old watchers
+    for (const w of this.externalWatchers) { w.dispose(); }
+    this.externalWatchers = [];
+    this.externalPaths = paths || [];
+
+    for (const p of this.externalPaths) {
+      try {
+        const pattern = `${p.replace(/\\/g, '/')}/**/*.tcl`;
+        const w = vscode.workspace.createFileSystemWatcher(pattern);
+        w.onDidCreate(uri => this.indexFile(uri));
+        w.onDidChange(uri => this.indexFile(uri));
+        w.onDidDelete(uri => this.removeFile(uri));
+        this.externalWatchers.push(w);
+        if (context) context.subscriptions.push(w as vscode.Disposable);
+      } catch (e) {
+        // ignore watcher creation errors
+      }
+    }
+
+    // rebuild index to include newly added external files
+    await this.buildIndex();
   }
 
   async indexFile(uri: vscode.Uri) {

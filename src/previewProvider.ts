@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { TclIndexer } from './indexer';
+import { BUILTINS } from './builtins';
 
 export class TclPreviewProvider implements vscode.HoverProvider {
   private indexer: TclIndexer;
@@ -38,15 +39,25 @@ async provideHover(
   } else {
     // fallback: check for procedure signatures
     const procSigs = this.indexer.getProcSignatures(name);
-    if (!procSigs.length) return null;
+    if (procSigs.length) {
+      lines.push(`**Procedure**: \`${name}\``);
 
-    lines.push(`**Procedure**: \`${name}\``);
-
-    for (const sig of procSigs) {
-      const relPath = vscode.workspace.asRelativePath(sig.loc.uri);
-      const lineNum = sig.loc.range.start.line + 1;
-      const params = sig.params.length ? sig.params.join(' ') : '(no params)';
-      lines.push(`- Params: ${params} — Defined in ${relPath}:${lineNum}`);
+      for (const sig of procSigs) {
+        const relPath = vscode.workspace.asRelativePath(sig.loc.uri);
+        const lineNum = sig.loc.range.start.line + 1;
+        const params = sig.params.length ? sig.params.join(' ') : '(no params)';
+        lines.push(`- Params: ${params} — Defined in ${relPath}:${lineNum}`);
+      }
+    } else {
+      // check for built-in commands
+      const builtin = BUILTINS[name] || BUILTINS[name.toLowerCase()];
+      if (builtin) {
+        lines.push(`**Builtin**: \`${name}\``);
+        lines.push(builtin.description);
+        if (builtin.params && builtin.params.length) lines.push(`**Params:** ${builtin.params.join(' ')}`);
+      } else {
+        return null;
+      }
     }
   }
 

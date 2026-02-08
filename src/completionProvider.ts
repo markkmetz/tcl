@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { TclIndexer } from './indexer';
+import { BUILTINS, SNIPPETS } from './builtins';
 
 export class TclCompletionProvider implements vscode.CompletionItemProvider {
   private indexer: TclIndexer;
@@ -21,6 +22,48 @@ async provideCompletionItems(
 
   const procs = this.indexer.listProcs(prefix);
   const items: vscode.CompletionItem[] = [];
+
+  // add built-in commands that match the prefix (case-insensitive)
+  const prefixLower = prefix.toLowerCase();
+  // first add snippet templates (proc, namespace, etc.)
+  const snippetKeys = Object.keys(SNIPPETS).filter(k => prefix === '' || k.toLowerCase().startsWith(prefixLower));
+  for (const key of snippetKeys) {
+    const meta = SNIPPETS[key];
+    const sitem = new vscode.CompletionItem(key, vscode.CompletionItemKind.Snippet);
+    sitem.detail = 'Tcl snippet';
+    const md = new vscode.MarkdownString();
+    md.appendMarkdown(`**Snippet**: ${key}\n\n`);
+    md.appendMarkdown(`${meta.description}\n\n`);
+    if (meta.params && meta.params.length) md.appendMarkdown(`**Params:** ${meta.params.join(' ')}`);
+    sitem.documentation = md;
+    sitem.insertText = new vscode.SnippetString(meta.snippet);
+    items.push(sitem);
+  }
+  const builtins = Object.keys(BUILTINS).filter(b => prefix === '' || b.toLowerCase().startsWith(prefixLower));
+  for (const builtin of builtins) {
+    const meta = BUILTINS[builtin];
+    const bitem = new vscode.CompletionItem(builtin, vscode.CompletionItemKind.Function);
+    bitem.detail = 'Tcl builtin';
+    // documentation with description and params
+    const md = new vscode.MarkdownString();
+    md.appendMarkdown(`**Builtin**: ${builtin}\n\n`);
+    md.appendMarkdown(`${meta.description}\n\n`);
+    if (meta.params && meta.params.length) md.appendMarkdown(`**Params:** ${meta.params.join(' ')}`);
+    bitem.documentation = md;
+
+    // create snippet from params
+    if (meta.params && meta.params.length) {
+      const snippetText = `${builtin} ${meta.params
+        .map((p, idx) => `\${${idx + 1}:${p}}`)
+        .join(' ')}$0`;
+      // fix escaped ${ to proper snippet syntax
+      bitem.insertText = new vscode.SnippetString(snippetText.replace('\\${', '${'));
+    } else {
+      bitem.insertText = new vscode.SnippetString(`${builtin}$0`);
+    }
+
+    items.push(bitem);
+  }
 
   for (const procName of procs) {
     const item = new vscode.CompletionItem(procName, vscode.CompletionItemKind.Function);
