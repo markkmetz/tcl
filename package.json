@@ -1,5 +1,6 @@
 {
   "name": "marks-tcl-extension",
+  "publisher": "markkmetz",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
   "version": "0.0.2",
