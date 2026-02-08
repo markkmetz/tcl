@@ -77,6 +77,9 @@ export class TclIndexer {
 
   async indexFile(uri: vscode.Uri) {
   try {
+    // remove existing entries for this file before re-indexing
+    this.removeFile(uri);
+
     const doc = await vscode.workspace.openTextDocument(uri);
     const lines = doc.getText().split(/\r?\n/);
 
@@ -229,7 +232,9 @@ export class TclIndexer {
         else this.methodIndex.delete(k);
       }
     }
-    this._onDidIndex.fire();
+    // also clean up fileImports
+    this.fileImports.delete(uri.toString());
+    // Note: don't fire _onDidIndex here as this is called from indexFile
   }
 
   // Linting: detect duplicate definitions and unused variables
