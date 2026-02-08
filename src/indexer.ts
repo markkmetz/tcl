@@ -7,6 +7,8 @@ export class TclIndexer {
   private procIndex: Map<string, { loc: vscode.Location; params: string[] }[]> = new Map();
   private methodIndex: Map<string, { loc: vscode.Location; params: string[] }[]> = new Map();
   private watcher?: vscode.FileSystemWatcher;
+  private _onDidIndex = new vscode.EventEmitter<void>();
+  public readonly onDidIndex = this._onDidIndex.event;
 
   activate(context: vscode.ExtensionContext) {
     this.buildIndex();
@@ -22,6 +24,7 @@ export class TclIndexer {
     this.variableIndex.clear();
     const files = await vscode.workspace.findFiles('**/*.tcl');
     await Promise.all(files.map(f => this.indexFile(f)));
+    this._onDidIndex.fire();
   }
 
   async indexFile(uri: vscode.Uri) {
@@ -76,6 +79,7 @@ export class TclIndexer {
   } catch (e) {
     // ignore unreadable files
   }
+  this._onDidIndex.fire();
 }
 
   removeFile(uri: vscode.Uri) {
@@ -107,6 +111,64 @@ export class TclIndexer {
         else this.methodIndex.delete(k);
       }
     }
+    this._onDidIndex.fire();
+  }
+
+  // Linting: detect duplicate definitions and unused variables
+  async lint(): Promise<Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }>> {
+    const results: Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }> = [];
+
+    // duplicate procs/methods
+    const checkDuplicates = (map: Map<string, { loc: vscode.Location; params: string[] }[]>) => {
+      for (const [name, arr] of map.entries()) {
+        if (arr.length > 1) {
+          for (const entry of arr) {
+            const diag = new vscode.Diagnostic(entry.loc.range, `Duplicate definition of '${name}'`, vscode.DiagnosticSeverity.Warning);
+            results.push({ uri: entry.loc.uri, diagnostics: [diag] });
+          }
+        }
+      }
+    };
+
+    checkDuplicates(this.procIndex);
+    checkDuplicates(this.methodIndex);
+
+    // unused variables: search for $name occurrences across workspace files
+    const vars = Array.from(this.variableIndex.entries());
+    const files = await vscode.workspace.findFiles('**/*.tcl');
+    const docTexts: Map<string, string> = new Map();
+    for (const f of files) {
+      try { const d = await vscode.workspace.openTextDocument(f); docTexts.set(f.toString(), d.getText()); } catch (e) { }
+    }
+
+    for (const [name, arr] of vars) {
+      let used = false;
+      const searchPattern = new RegExp(`\\$${name}\\b`);
+      for (const [, text] of docTexts) {
+        if (searchPattern.test(text)) { used = true; break; }
+      }
+      if (!used) {
+        for (const v of arr) {
+          const d = new vscode.Diagnostic(v.loc.range, `Variable '${name}' appears to be unused`, vscode.DiagnosticSeverity.Information);
+          results.push({ uri: v.loc.uri, diagnostics: [d] });
+        }
+      }
+    }
+
+    // aggregate diagnostics by uri
+    const byUri = new Map<string, vscode.Diagnostic[]>();
+    for (const r of results) {
+      const key = r.uri.toString();
+      const exist = byUri.get(key) || [];
+      exist.push(...r.diagnostics);
+      byUri.set(key, exist);
+    }
+
+    const out: Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }> = [];
+    for (const [k, diags] of byUri.entries()) {
+      out.push({ uri: vscode.Uri.parse(k), diagnostics: diags });
+    }
+    return out;
   }
 
   async lookup(name: string): Promise<vscode.Location[]> {
