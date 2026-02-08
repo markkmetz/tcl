@@ -5,6 +5,7 @@ import { TclPreviewProvider } from './previewProvider';
 import { TclCompletionProvider } from './completionProvider';
 import { TclSignatureProvider } from './signatureProvider';
 import { TclSemanticProvider } from './semanticProvider';
+import { TclFormatter } from './formatter';
 
 export function activate(context: vscode.ExtensionContext) {
   const indexer = new TclIndexer();
@@ -88,6 +89,49 @@ export function activate(context: vscode.ExtensionContext) {
 
   // initial registration
   registerProviders();
+
+  // register formatter and format command
+  const formatter = new TclFormatter();
+  const fmtDisp = vscode.languages.registerDocumentFormattingEditProvider({ language: 'tcl' }, formatter);
+  context.subscriptions.push(fmtDisp);
+
+  const formatCmd = vscode.commands.registerCommand('tcl.formatDocument', async (resource?: vscode.Uri) => {
+    try {
+      if (resource && resource.fsPath) {
+        // format the given file (explorer)
+        const doc = await vscode.workspace.openTextDocument(resource);
+        const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>('vscode.executeFormatDocumentProvider', doc.uri, {});
+        if (edits && edits.length) {
+          const we = new vscode.WorkspaceEdit();
+          for (const e of edits) we.replace(doc.uri, e.range, e.newText);
+          await vscode.workspace.applyEdit(we);
+          await doc.save();
+        }
+        return;
+      }
+
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const doc = editor.document;
+      if (doc.languageId !== 'tcl') return;
+      const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>('vscode.executeFormatDocumentProvider', doc.uri, {});
+      if (edits && edits.length) {
+        const we = new vscode.WorkspaceEdit();
+        for (const e of edits) we.replace(doc.uri, e.range, e.newText);
+        await vscode.workspace.applyEdit(we);
+        await doc.save();
+      }
+    } catch (e) {
+      // ignore
+    }
+  });
+  context.subscriptions.push(formatCmd);
+
+  // add a command to rebuild the index on demand
+  const rebuildCmd = vscode.commands.registerCommand('tcl.rebuildIndex', async () => {
+    try { await indexer.buildIndex(); vscode.window.showInformationMessage('Tcl index rebuilt.'); } catch (e) { /*ignore*/ }
+  });
+  context.subscriptions.push(rebuildCmd);
 
   // respond to configuration changes
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {

@@ -32,6 +32,7 @@ async provideCompletionItems(
     const nsProcs = this.indexer.listProcsInNamespace(namespace, partial, document);
     for (const fq of nsProcs) {
       const short = fq.split('::').pop() || fq;
+      // show full fqName as label but insert only short name so it appends to the typed namespace
       const item = new vscode.CompletionItem(fq, vscode.CompletionItemKind.Function);
       item.detail = `Tcl procedure in namespace ${namespace}`;
       const sigs = this.indexer.getProcSignatures(fq, document);
@@ -41,7 +42,7 @@ async provideCompletionItems(
         md.appendMarkdown(sigs.map(s => `- ${s.params.join(' ')} — ${vscode.workspace.asRelativePath(s.loc.uri)}:${s.loc.range.start.line + 1}`).join('\n'));
         item.documentation = md;
       }
-      item.insertText = new vscode.SnippetString(`${fq}$0`);
+      item.insertText = new vscode.SnippetString(`${short}$0`);
       items.push(item);
     }
     return items;
@@ -49,9 +50,9 @@ async provideCompletionItems(
 
   // show namespaces first to avoid flooding completions
   const nsList = this.indexer.listNamespaces();
-  const nsPrefix = prefix.split('::')[0] || '';
+  const nsPrefix = (prefix.split('::')[0] || '').toLowerCase();
   for (const ns of nsList) {
-    if (nsPrefix && !ns.startsWith(nsPrefix)) continue;
+    if (nsPrefix && !ns.toLowerCase().startsWith(nsPrefix)) continue;
     const nitem = new vscode.CompletionItem(`${ns}::`, vscode.CompletionItemKind.Module);
     nitem.detail = 'Tcl namespace';
     nitem.insertText = `${ns}::`;

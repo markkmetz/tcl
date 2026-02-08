@@ -9,7 +9,7 @@ export class TclIndexer {
   private watcher?: vscode.FileSystemWatcher;
   private externalPaths: string[] = [];
   private externalWatchers: vscode.FileSystemWatcher[] = [];
-  private fileImports: Map<string, { fileNamespace?: string; importedNamespaces: Set<string>; importedProcs: Set<string> }> = new Map();
+  private fileImports: Map<string, { fileNamespaces: Set<string>; importedNamespaces: Set<string>; importedProcs: Set<string> }> = new Map();
   private _onDidIndex = new vscode.EventEmitter<void>();
   public readonly onDidIndex = this._onDidIndex.event;
 
@@ -30,6 +30,9 @@ export class TclIndexer {
   async buildIndex() {
     this.index.clear();
     this.variableIndex.clear();
+    this.procIndex.clear();
+    this.methodIndex.clear();
+    this.fileImports.clear();
     const files = await vscode.workspace.findFiles('**/*.tcl');
     const allFiles = [...files];
 
@@ -80,6 +83,7 @@ export class TclIndexer {
     // track current namespace and imports while scanning file
     const importedNamespaces = new Set<string>();
     const importedProcs = new Set<string>();
+    const fileNamespaces = new Set<string>();
     let namespaceStack: string[] = [];
 
     for (let i = 0; i < lines.length; i++) {
@@ -88,7 +92,9 @@ export class TclIndexer {
       // detect namespace eval start: namespace eval NAME {
       const nsStart = line.match(/^\s*namespace\s+eval\s+([A-Za-z0-9_:]+)\s*\{/);
       if (nsStart) {
-        namespaceStack.push(nsStart[1].replace(/^::+/, ''));
+        const n = nsStart[1].replace(/^::+/, '');
+        namespaceStack.push(n);
+        fileNamespaces.add(n);
       }
 
       // detect namespace import statements
@@ -177,7 +183,7 @@ export class TclIndexer {
 
     // store imports/namespace info for this file
     const fileKey = uri.toString();
-    this.fileImports.set(fileKey, { fileNamespace: namespaceStack[namespaceStack.length - 1], importedNamespaces, importedProcs });
+    this.fileImports.set(fileKey, { fileNamespaces, importedNamespaces, importedProcs });
   } catch (e) {
     // ignore unreadable files
   }
@@ -297,7 +303,8 @@ export class TclIndexer {
     const includeEntry = (entry: { fqName: string; namespace?: string }) => {
       if (!entry.namespace) return true;
       if (!fileInfo) return true;
-      if (fileInfo.fileNamespace && fileInfo.fileNamespace === entry.namespace) return true;
+      // include if the file declares the namespace
+      if (fileInfo.fileNamespaces && fileInfo.fileNamespaces.has(entry.namespace)) return true;
       if (fileInfo.importedProcs.has(entry.fqName)) return true;
       if (fileInfo.importedNamespaces.has(entry.namespace)) return true;
       return false;
@@ -327,7 +334,7 @@ export class TclIndexer {
     const results: string[] = [];
     const seen = new Set<string>();
 
-    let fileInfo: { fileNamespace?: string; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
+    let fileInfo: { fileNamespaces: Set<string>; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
     if (document) fileInfo = this.fileImports.get(document.uri.toString());
 
     const includeEntry = (entry: { fqName: string; namespace?: string }) => {
@@ -335,8 +342,8 @@ export class TclIndexer {
       if (!entry.namespace) return true;
       // if no document context, include
       if (!fileInfo) return true;
-      // same namespace
-      if (fileInfo.fileNamespace && fileInfo.fileNamespace === entry.namespace) return true;
+      // same namespace (file may declare multiple namespaces)
+      if (fileInfo.fileNamespaces && fileInfo.fileNamespaces.has(entry.namespace || '')) return true;
       // imported explicit proc
       if (fileInfo.importedProcs.has(entry.fqName)) return true;
       // imported namespace wildcard
@@ -345,14 +352,14 @@ export class TclIndexer {
     };
 
     for (const [name, arr] of this.procIndex.entries()) {
-      if (prefix && !name.startsWith(prefix)) continue;
+      if (prefix && !name.toLowerCase().startsWith(prefix.toLowerCase())) continue;
       for (const p of arr) {
         if (!includeEntry(p)) continue;
         if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
       }
     }
     for (const [name, arr] of this.methodIndex.entries()) {
-      if (prefix && !name.startsWith(prefix)) continue;
+      if (prefix && !name.toLowerCase().startsWith(prefix.toLowerCase())) continue;
       for (const p of arr) {
         if (!includeEntry(p)) continue;
         if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
@@ -379,17 +386,18 @@ export class TclIndexer {
     const seen = new Set<string>();
     const ns = namespace.replace(/^::+/, '');
     const pref = prefix || '';
+    const prefLower = pref.toLowerCase();
 
     const include = (p: { fqName: string; namespace?: string }) => {
       if (!p.namespace) return false;
-      return p.namespace === ns;
+      return p.namespace.toLowerCase() === ns.toLowerCase();
     };
 
     for (const arr of this.procIndex.values()) {
       for (const p of arr) {
         if (!include(p)) continue;
         const short = p.fqName.split('::').pop() || p.fqName;
-        if (pref && !short.startsWith(pref)) continue;
+        if (pref && !short.toLowerCase().startsWith(prefLower)) continue;
         if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
       }
     }
@@ -397,7 +405,7 @@ export class TclIndexer {
       for (const p of arr) {
         if (!include(p)) continue;
         const short = p.fqName.split('::').pop() || p.fqName;
-        if (pref && !short.startsWith(pref)) continue;
+        if (pref && !short.toLowerCase().startsWith(prefLower)) continue;
         if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
       }
     }
@@ -419,28 +427,30 @@ export class TclIndexer {
 
   getProcSignatures(name: string, document?: vscode.TextDocument): Array<{ params: string[]; loc: vscode.Location; fqName: string }> {
     const results: Array<{ params: string[]; loc: vscode.Location; fqName: string }> = [];
+    // normalize input (strip leading ::)
+    const normalizedName = name.replace(/^::+/, '');
     // if fq name requested
-    if (name.includes('::')) {
-      const simple = name.split('::').pop() || name;
+    if (normalizedName.includes('::')) {
+      const simple = normalizedName.split('::').pop() || normalizedName;
       const parr = this.procIndex.get(simple) || [];
       for (const p of parr) {
-        if (p.fqName === name) results.push({ params: p.params, loc: p.loc, fqName: p.fqName });
+        if (p.fqName.toLowerCase() === normalizedName.toLowerCase()) results.push({ params: p.params, loc: p.loc, fqName: p.fqName });
       }
       const marr = this.methodIndex.get(simple) || [];
       for (const m of marr) {
-        if (m.fqName === name) results.push({ params: m.params, loc: m.loc, fqName: m.fqName });
+        if (m.fqName.toLowerCase() === normalizedName.toLowerCase()) results.push({ params: m.params, loc: m.loc, fqName: m.fqName });
       }
       return results;
     }
 
     // otherwise filter by document context
-    let fileInfo: { fileNamespace?: string; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
+    let fileInfo: { fileNamespaces: Set<string>; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
     if (document) fileInfo = this.fileImports.get(document.uri.toString());
 
     const includeEntry = (entry: { fqName: string; namespace?: string }) => {
       if (!entry.namespace) return true;
       if (!fileInfo) return true;
-      if (fileInfo.fileNamespace && fileInfo.fileNamespace === entry.namespace) return true;
+      if (fileInfo.fileNamespaces && fileInfo.fileNamespaces.has(entry.namespace || '')) return true;
       if (fileInfo.importedProcs.has(entry.fqName)) return true;
       if (fileInfo.importedNamespaces.has(entry.namespace)) return true;
       return false;

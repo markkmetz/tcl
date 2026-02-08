@@ -84,6 +84,29 @@
         "when": "editorTextFocus && editorLangId == 'tcl'"
       }
     ]
+    ,
+    "commands": [
+      {
+        "command": "tcl.formatDocument",
+        "title": "Format Tcl Document"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "tcl.formatDocument",
+          "when": "editorLangId == 'tcl'",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "tcl.formatDocument",
+          "when": "resourceLangId == 'tcl'",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
