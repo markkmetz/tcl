@@ -431,7 +431,8 @@ exit 0
     this._onDidStartLint.fire();
     const results: Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }> = [];
     const cfg = vscode.workspace.getConfiguration('tcl');
-    const useTclsh = cfg.get<boolean>('runtime.enableSyntaxCheck') !== false;
+    const syntaxCheckMode = cfg.get<string>('runtime.syntaxCheckMode') || 'local';
+    const enableSyntaxCheck = syntaxCheckMode !== 'disabled';
 
     // duplicate procs/methods
     const checkDuplicates = (map: Map<string, any[]>) => {
@@ -464,10 +465,8 @@ exit 0
       }
     }
 
-    if (useTclsh) {
-      const useRemote = cfg.get<boolean>('runtime.useRemote') === true;
-      
-      if (useRemote) {
+    if (enableSyntaxCheck) {
+      if (syntaxCheckMode === 'remote') {
         // Use remote syntax checking
         this._onDidStartSyntaxCheck.fire();
         for (const doc of targetDocs) {
@@ -481,20 +480,24 @@ exit 0
           }
         }
         this._onDidEndSyntaxCheck.fire();
-      } else if (await this.checkTclsh()) {
+      } else if (syntaxCheckMode === 'local') {
         // Use local tclsh
-        this._onDidStartSyntaxCheck.fire();
-        for (const doc of targetDocs) {
-          try {
-            const syntaxDiags = await this.checkSyntaxWithTclsh(doc.uri, doc.getText());
-            if (syntaxDiags.length > 0) {
-              results.push({ uri: doc.uri, diagnostics: syntaxDiags });
+        if (await this.checkTclsh()) {
+          this._onDidStartSyntaxCheck.fire();
+          for (const doc of targetDocs) {
+            try {
+              const syntaxDiags = await this.checkSyntaxWithTclsh(doc.uri, doc.getText());
+              if (syntaxDiags.length > 0) {
+                results.push({ uri: doc.uri, diagnostics: syntaxDiags });
+              }
+            } catch (e) {
+              // ignore
             }
-          } catch (e) {
-            // ignore
           }
+          this._onDidEndSyntaxCheck.fire();
+        } else {
+          console.warn('[tcl] Local tclsh not found. Install tclsh or switch to remote syntax checking in settings.');
         }
-        this._onDidEndSyntaxCheck.fire();
       }
     }
 

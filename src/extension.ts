@@ -107,6 +107,8 @@ export function activate(context: vscode.ExtensionContext) {
   registerProviders();
 
   // index only on save/edit of current document
+  let lintDebounceTimer: NodeJS.Timeout | undefined;
+  
   const runLintIfRegistered = async () => {
     if (diagnostics) {
       const lintResults = await indexer.lint(getActiveTclDoc());
@@ -115,16 +117,32 @@ export function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  const debouncedLint = () => {
+    // Clear existing timer
+    if (lintDebounceTimer) clearTimeout(lintDebounceTimer);
+    
+    // Get delay from settings (in seconds, convert to ms)
+    const cfg = vscode.workspace.getConfiguration('tcl');
+    const delaySeconds = cfg.get<number>('runtime.syntaxCheckDelay') || 10;
+    const delayMs = delaySeconds * 1000;
+    
+    // Set new timer
+    lintDebounceTimer = setTimeout(() => {
+      runLintIfRegistered();
+      lintDebounceTimer = undefined;
+    }, delayMs);
+  };
+
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => {
     if (doc.languageId !== 'tcl') return;
     if (vscode.window.activeTextEditor?.document.uri.toString() !== doc.uri.toString()) return;
-    indexer.indexFile(doc.uri).then(() => runLintIfRegistered());
+    indexer.indexFile(doc.uri).then(() => debouncedLint());
   }));
 
   context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => {
     if (e.document.languageId !== 'tcl') return;
     if (vscode.window.activeTextEditor?.document.uri.toString() !== e.document.uri.toString()) return;
-    indexer.indexFile(e.document.uri).then(() => runLintIfRegistered());
+    indexer.indexFile(e.document.uri).then(() => debouncedLint());
   }));
 
   // status events

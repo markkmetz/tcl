@@ -3,7 +3,7 @@
   "publisher": "markkmetz",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "1.0.12",
+  "version": "1.0.14",
   "repository": {
     "type": "git",
     "url": "https://github.com/markkmetz/tcl.git"
@@ -81,25 +81,40 @@
           "default": [],
           "description": "Additional filesystem folders (absolute paths) to index for Tcl files."
         },
+        "tcl.runtime.syntaxCheckMode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "local",
+            "remote"
+          ],
+          "default": "local",
+          "enumDescriptions": [
+            "Disable runtime syntax checking",
+            "Use local tclsh for syntax checking",
+            "Use remote syntax check service (requires server running)"
+          ],
+          "markdownDescription": "Choose syntax checking mode:\n- **disabled**: No syntax checking\n- **local**: Use local `tclsh` executable\n- **remote**: Use remote HTTP service\n\nOnly one mode can be active."
+        },
         "tcl.runtime.tclshPath": {
           "type": "string",
           "default": "tclsh",
-          "description": "Path to tclsh executable for runtime syntax checking. Default: 'tclsh' (searches PATH)."
-        },
-        "tcl.runtime.enableSyntaxCheck": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable runtime syntax checking using tclsh."
-        },
-        "tcl.runtime.useRemote": {
-          "type": "boolean",
-          "default": false,
-          "description": "Use remote syntax check service instead of local tclsh (useful for container environments)."
+          "description": "Path to tclsh executable for local syntax checking. Default: 'tclsh' (searches PATH).",
+          "markdownDescription": "Path to tclsh executable for **local** syntax checking. Only used when `syntaxCheckMode` is set to `local`."
         },
         "tcl.runtime.remoteUrl": {
           "type": "string",
           "default": "http://localhost:8765/check",
-          "description": "URL of remote TCL syntax check service."
+          "description": "URL of remote TCL syntax check service.",
+          "markdownDescription": "URL of remote TCL syntax check service. Only used when `syntaxCheckMode` is set to `remote`. Example: `http://localhost:8765/check`"
+        },
+        "tcl.runtime.syntaxCheckDelay": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 300,
+          "description": "Delay in seconds before running syntax check after document change.",
+          "markdownDescription": "Delay in seconds before running syntax check after a document change. Higher values reduce checking frequency (useful for slow remote services). Range: 1-300 seconds."
         }
       }
     },

@@ -1,0 +1,14 @@
+{
+  "[tcl]": {
+    "editor.defaultFormatter": "markkmetz.marks-tcl-extension"
+  },
+  "tcl.features.gotoDefinition": true,
+  "tcl.features.hover": true,
+  "tcl.features.completion": true,
+  "tcl.features.signatureHelp": true,
+  "tcl.features.semanticTokens": true,
+  "tcl.features.lint": true,
+  "tcl.runtime.syntaxCheckMode": "local",
+  "tcl.runtime.syntaxCheckDelay": 10,
+  "tcl.runtime.remoteUrl": "http://localhost:8765/check"
+}

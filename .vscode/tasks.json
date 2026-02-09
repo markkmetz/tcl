@@ -22,6 +22,62 @@
         "reveal": "always",
         "panel": "shared"
       }
+    },
+    {
+      "label": "Start TCL Syntax Server (Debug)",
+      "type": "shell",
+      "command": "python3 ./bin/tcl-syntax-server-debug.py 8765",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^.*$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*Starting TCL Syntax Server.*",
+          "endsPattern": "^.*Press Ctrl\\+C to stop.*"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "Start TCL Syntax Server (Production)",
+      "type": "shell",
+      "command": "python3 ./bin/tcl-syntax-server.py 8765",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^.*$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*listening on port.*",
+          "endsPattern": "^.*Press Ctrl\\+C to stop.*"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "Test TCL Syntax Server",
+      "type": "shell",
+      "command": "bash ./bin/test-server.sh",
+      "dependsOn": ["Start TCL Syntax Server (Debug)"],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
     }
   ]
 }
