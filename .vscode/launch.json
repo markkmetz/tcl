@@ -1,6 +1,8 @@
 {
   "version": "0.2.0",
   "configurations": [
+    
+    
     {
       "name": "Run Extension",
       "type": "extensionHost",
@@ -11,6 +13,16 @@
       "preLaunchTask": "npm: compile",
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "console": "integratedTerminal"
+    },
+    {
+      "name": "Run Tests",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "test"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
     }
   ]
 }

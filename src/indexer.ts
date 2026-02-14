@@ -4,8 +4,8 @@ import { parseDefinitionLine } from './parser';
 export class TclIndexer {
   private index: Map<string, vscode.Location[]> = new Map();
   private variableIndex: Map<string, { loc: vscode.Location; value: string }[]> = new Map();
-  private procIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; namespace?: string }[]> = new Map();
-  private methodIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; namespace?: string }[]> = new Map();
+  private procIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
+  private methodIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
   private watcher?: vscode.FileSystemWatcher;
   private externalPaths: string[] = [];
   private externalWatchers: vscode.FileSystemWatcher[] = [];
@@ -133,6 +133,7 @@ export class TclIndexer {
       const def = parseDefinitionLine(line);
       if (def) {
         const { type, name, params } = def;
+        const hasLeading = /^::+/.test(name);
         // normalize leading :: in definitions
         const cleanName = name.replace(/^::+/, '');
         // determine namespace for this definition
@@ -146,7 +147,8 @@ export class TclIndexer {
           defNamespace = namespaceStack[namespaceStack.length - 1];
         }
 
-        const fqName = defNamespace ? `${defNamespace}::${simpleName}` : simpleName;
+        const normalizedFqName = defNamespace ? `${defNamespace}::${simpleName}` : simpleName;
+        const fqName = hasLeading ? `::${normalizedFqName}` : normalizedFqName;
         const pos = new vscode.Position(i, line.indexOf(simpleName));
         const loc = new vscode.Location(uri, pos);
 
@@ -159,7 +161,7 @@ export class TclIndexer {
         }
         // also index by fqName (normalized) for direct lookup
         if (defNamespace) {
-          const normalizedFq = fqName.replace(/^::+/, '');
+          const normalizedFq = normalizedFqName;
           const farr = this.index.get(normalizedFq) || [];
           if (!farr.find(l => l.uri.toString() === uri.toString() && l.range.start.line === i)) {
             farr.push(loc);
@@ -172,7 +174,7 @@ export class TclIndexer {
         const pArr = indexMap.get(simpleName) || [];
         const pExists = pArr.findIndex(p => p.loc.uri.toString() === uri.toString() && p.loc.range.start.line === i);
         if (pExists === -1) {
-          pArr.push({ loc, params, fqName: fqName.replace(/^::+/, ''), namespace: defNamespace });
+          pArr.push({ loc, params, fqName, normalizedFqName, namespace: defNamespace });
           indexMap.set(simpleName, pArr);
         }
       }
@@ -370,12 +372,12 @@ export class TclIndexer {
 
     let fileInfo = document ? this.fileImports.get(document.uri.toString()) : undefined;
 
-    const includeEntry = (entry: { fqName: string; namespace?: string }) => {
+    const includeEntry = (entry: { normalizedFqName: string; namespace?: string }) => {
       if (!entry.namespace) return true;
       if (!fileInfo) return true;
       // include if the file declares the namespace
       if (fileInfo.fileNamespaces && fileInfo.fileNamespaces.has(entry.namespace)) return true;
-      if (fileInfo.importedProcs.has(entry.fqName)) return true;
+      if (fileInfo.importedProcs.has(entry.normalizedFqName)) return true;
       if (fileInfo.importedNamespaces.has(entry.namespace)) return true;
       return false;
     };
@@ -407,7 +409,7 @@ export class TclIndexer {
     let fileInfo: { fileNamespaces: Set<string>; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
     if (document) fileInfo = this.fileImports.get(document.uri.toString());
 
-    const includeEntry = (entry: { fqName: string; namespace?: string }) => {
+    const includeEntry = (entry: { normalizedFqName: string; namespace?: string }) => {
       // always include global (no namespace)
       if (!entry.namespace) return true;
       // if no document context, include
@@ -415,7 +417,7 @@ export class TclIndexer {
       // same namespace (file may declare multiple namespaces)
       if (fileInfo.fileNamespaces && fileInfo.fileNamespaces.has(entry.namespace || '')) return true;
       // imported explicit proc
-      if (fileInfo.importedProcs.has(entry.fqName)) return true;
+      if (fileInfo.importedProcs.has(entry.normalizedFqName)) return true;
       // imported namespace wildcard
       if (fileInfo.importedNamespaces.has(entry.namespace)) return true;
       return false;
@@ -425,14 +427,14 @@ export class TclIndexer {
       if (prefix && !name.toLowerCase().startsWith(prefix.toLowerCase())) continue;
       for (const p of arr) {
         if (!includeEntry(p)) continue;
-        if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
+        if (!seen.has(p.normalizedFqName)) { seen.add(p.normalizedFqName); results.push(p.normalizedFqName); }
       }
     }
     for (const [name, arr] of this.methodIndex.entries()) {
       if (prefix && !name.toLowerCase().startsWith(prefix.toLowerCase())) continue;
       for (const p of arr) {
         if (!includeEntry(p)) continue;
-        if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
+        if (!seen.has(p.normalizedFqName)) { seen.add(p.normalizedFqName); results.push(p.normalizedFqName); }
       }
     }
     return results;
@@ -458,7 +460,7 @@ export class TclIndexer {
     const pref = prefix || '';
     const prefLower = pref.toLowerCase();
 
-    const include = (p: { fqName: string; namespace?: string }) => {
+    const include = (p: { normalizedFqName: string; namespace?: string }) => {
       if (!p.namespace) return false;
       return p.namespace.toLowerCase() === ns.toLowerCase();
     };
@@ -466,17 +468,17 @@ export class TclIndexer {
     for (const arr of this.procIndex.values()) {
       for (const p of arr) {
         if (!include(p)) continue;
-        const short = p.fqName.split('::').pop() || p.fqName;
+        const short = p.normalizedFqName.split('::').pop() || p.normalizedFqName;
         if (pref && !short.toLowerCase().startsWith(prefLower)) continue;
-        if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
+        if (!seen.has(p.normalizedFqName)) { seen.add(p.normalizedFqName); results.push(p.normalizedFqName); }
       }
     }
     for (const arr of this.methodIndex.values()) {
       for (const p of arr) {
         if (!include(p)) continue;
-        const short = p.fqName.split('::').pop() || p.fqName;
+        const short = p.normalizedFqName.split('::').pop() || p.normalizedFqName;
         if (pref && !short.toLowerCase().startsWith(prefLower)) continue;
-        if (!seen.has(p.fqName)) { seen.add(p.fqName); results.push(p.fqName); }
+        if (!seen.has(p.normalizedFqName)) { seen.add(p.normalizedFqName); results.push(p.normalizedFqName); }
       }
     }
 
@@ -495,6 +497,29 @@ export class TclIndexer {
     return results;
   }
 
+  getDocumentSignatures(document: vscode.TextDocument): Array<{ params: string[]; loc: vscode.Location; fqName: string; normalizedFqName: string; type: 'proc' | 'method' }> {
+    const results: Array<{ params: string[]; loc: vscode.Location; fqName: string; normalizedFqName: string; type: 'proc' | 'method' }> = [];
+    const docKey = document.uri.toString();
+
+    for (const arr of this.procIndex.values()) {
+      for (const p of arr) {
+        if (p.loc.uri.toString() === docKey) {
+          results.push({ params: p.params, loc: p.loc, fqName: p.fqName, normalizedFqName: p.normalizedFqName, type: 'proc' });
+        }
+      }
+    }
+
+    for (const arr of this.methodIndex.values()) {
+      for (const m of arr) {
+        if (m.loc.uri.toString() === docKey) {
+          results.push({ params: m.params, loc: m.loc, fqName: m.fqName, normalizedFqName: m.normalizedFqName, type: 'method' });
+        }
+      }
+    }
+
+    return results;
+  }
+
   getProcSignatures(name: string, document?: vscode.TextDocument): Array<{ params: string[]; loc: vscode.Location; fqName: string }> {
     const results: Array<{ params: string[]; loc: vscode.Location; fqName: string }> = [];
     // normalize input (strip leading ::)
@@ -504,11 +529,11 @@ export class TclIndexer {
       const simple = normalizedName.split('::').pop() || normalizedName;
       const parr = this.procIndex.get(simple) || [];
       for (const p of parr) {
-        if (p.fqName.toLowerCase() === normalizedName.toLowerCase()) results.push({ params: p.params, loc: p.loc, fqName: p.fqName });
+        if (p.normalizedFqName.toLowerCase() === normalizedName.toLowerCase()) results.push({ params: p.params, loc: p.loc, fqName: p.normalizedFqName });
       }
       const marr = this.methodIndex.get(simple) || [];
       for (const m of marr) {
-        if (m.fqName.toLowerCase() === normalizedName.toLowerCase()) results.push({ params: m.params, loc: m.loc, fqName: m.fqName });
+        if (m.normalizedFqName.toLowerCase() === normalizedName.toLowerCase()) results.push({ params: m.params, loc: m.loc, fqName: m.normalizedFqName });
       }
       return results;
     }
@@ -517,20 +542,20 @@ export class TclIndexer {
     let fileInfo: { fileNamespaces: Set<string>; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
     if (document) fileInfo = this.fileImports.get(document.uri.toString());
 
-    const includeEntry = (entry: { fqName: string; namespace?: string }) => {
+    const includeEntry = (entry: { normalizedFqName: string; namespace?: string }) => {
       if (!entry.namespace) return true;
       if (!fileInfo) return true;
       if (fileInfo.fileNamespaces && fileInfo.fileNamespaces.has(entry.namespace || '')) return true;
-      if (fileInfo.importedProcs.has(entry.fqName)) return true;
+      if (fileInfo.importedProcs.has(entry.normalizedFqName)) return true;
       if (fileInfo.importedNamespaces.has(entry.namespace)) return true;
       return false;
     };
 
     const simple = name.split('::').pop() || name;
     const parr = this.procIndex.get(simple) || [];
-    for (const p of parr) if (includeEntry(p)) results.push({ params: p.params, loc: p.loc, fqName: p.fqName });
+    for (const p of parr) if (includeEntry(p)) results.push({ params: p.params, loc: p.loc, fqName: p.normalizedFqName });
     const marr = this.methodIndex.get(simple) || [];
-    for (const m of marr) if (includeEntry(m)) results.push({ params: m.params, loc: m.loc, fqName: m.fqName });
+    for (const m of marr) if (includeEntry(m)) results.push({ params: m.params, loc: m.loc, fqName: m.normalizedFqName });
     return results;
   }
 }
