@@ -6,6 +6,7 @@ export class TclIndexer {
   private variableIndex: Map<string, { loc: vscode.Location; value: string }[]> = new Map();
   private procIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
   private methodIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
+  private dictIndex: Map<string, { keys: Set<string>; line: number }> = new Map();
   private watcher?: vscode.FileSystemWatcher;
   private externalPaths: string[] = [];
   private externalWatchers: vscode.FileSystemWatcher[] = [];
@@ -32,6 +33,7 @@ export class TclIndexer {
     this.variableIndex.clear();
     this.procIndex.clear();
     this.methodIndex.clear();
+    this.dictIndex.clear();
     this.fileImports.clear();
     const files = await vscode.workspace.findFiles('**/*.tcl');
     const allFiles = [...files];
@@ -205,6 +207,43 @@ export class TclIndexer {
           varArr.push({ loc: vloc, value: rawValue });
           this.variableIndex.set(vname, varArr);
         }
+
+        // Parse dict create: set varname [dict create key1 val1 key2 val2]
+        // Handle multiline dict create with backslash continuation
+        let dictValue = rawValue;
+        let lineIdx = i;
+        while (lineIdx < lines.length - 1 && dictValue.trimEnd().endsWith('\\')) {
+          // Remove trailing backslash and continue to next line
+          dictValue = dictValue.trimEnd().slice(0, -1) + ' ' + lines[lineIdx + 1];
+          lineIdx++;
+        }
+        
+        const dictCreateMatch = dictValue.match(/\[dict\s+create\s+((?:[A-Za-z0-9_]+\s+[^\]]+\s*)*)\]/);
+        if (dictCreateMatch && dictCreateMatch[1]) {
+          const pairs = dictCreateMatch[1].trim().split(/\s+/);
+          const keys = new Set<string>();
+          for (let j = 0; j < pairs.length; j += 2) {
+            if (pairs[j] && !pairs[j].startsWith('$')) {
+              keys.add(pairs[j]);
+            }
+          }
+          if (keys.size > 0) {
+            this.dictIndex.set(vname, { keys, line: i });
+          }
+        }
+
+        // Parse dict set: dict set varname key value
+        const dictSetMatch = line.match(/dict\s+set\s+([A-Za-z0-9_:.]+)\s+([A-Za-z0-9_]+)/);
+        if (dictSetMatch && dictSetMatch[1]) {
+          const dictVar = dictSetMatch[1];
+          const key = dictSetMatch[2];
+          const existing = this.dictIndex.get(dictVar);
+          if (existing) {
+            existing.keys.add(key);
+          } else {
+            this.dictIndex.set(dictVar, { keys: new Set([key]), line: i });
+          }
+        }
       }
     }
 
@@ -246,6 +285,8 @@ export class TclIndexer {
         else this.methodIndex.delete(k);
       }
     }
+    // Clear dicts from removed file (simplified: clear all since we track by var name only)
+    this.dictIndex.clear();
     // also clean up fileImports
     this.fileImports.delete(uri.toString());
     // Note: don't fire _onDidIndex here as this is called from indexFile
@@ -569,5 +610,11 @@ export class TclIndexer {
     const marr = this.methodIndex.get(simple) || [];
     for (const m of marr) if (includeEntry(m)) results.push({ params: m.params, loc: m.loc, fqName: m.normalizedFqName });
     return results;
+  }
+
+  getDictKeys(varName: string): string[] {
+    const dict = this.dictIndex.get(varName);
+    if (!dict) return [];
+    return Array.from(dict.keys).sort();
   }
 }

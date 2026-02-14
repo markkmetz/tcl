@@ -14,8 +14,8 @@ async provideHover(
   position: vscode.Position,
   token: vscode.CancellationToken
 ): Promise<vscode.Hover | null> {
-  // get the current word (variable or proc name)
-  const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z0-9_:.]+/);
+  // get the current word (variable or proc name) - include optional $ prefix
+  const wordRange = document.getWordRangeAtPosition(position, /\$?[A-Za-z0-9_:.]+/);
   if (!wordRange) return null;
 
   let name = document.getText(wordRange);
@@ -33,6 +33,14 @@ async provideHover(
       const relPath = vscode.workspace.asRelativePath(e.loc.uri);
       const lineNum = e.loc.range.start.line + 1;
       lines.push(`**Variable**: \`${name}\``);
+
+      // Check if this variable is a dictionary and show its keys first
+      const dictKeys = this.indexer.getDictKeys(name);
+      if (dictKeys.length > 0) {
+        lines.push(`**Dictionary Keys**:`);
+        lines.push(dictKeys.map(k => `- \`${k}\``).join('\n'));
+      }
+
       lines.push(`Defined in ${relPath}:${lineNum}`);
       if (e.value) lines.push(`Value:\n\`\`\`\n${e.value}\n\`\`\``);
     }

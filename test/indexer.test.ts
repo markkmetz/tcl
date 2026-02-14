@@ -121,4 +121,51 @@ describe('Tcl indexer parsing', () => {
     expect(bar!.params).to.deep.equal(['p', 'q']);
     expect(bar!.namespace).to.equal('ns4');
   });
+
+  it('parses dictionary operations from dicts.tcl fixture', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    expect(result.dictOperations.length).to.be.greaterThan(0);
+
+    // Check for user dict from namespace
+    const userDict = result.dictOperations.find(d => d.varName === 'user');
+    expect(userDict).to.exist;
+    expect(userDict?.keys).to.include('name');
+    expect(userDict?.keys).to.include('age');
+    expect(userDict?.keys).to.include('email');
+
+    // Check for config dict (multiline continuation is now supported)
+    const configDict = result.dictOperations.find(d => d.varName === 'config');
+    expect(configDict).to.exist;
+    expect(configDict?.keys).to.include('debug');
+    expect(configDict?.keys).to.include('paths');
+
+    // Check for settings dict
+    const settingsDict = result.dictOperations.find(d => d.varName === 'settings');
+    expect(settingsDict).to.exist;
+    expect(settingsDict?.keys).to.include('theme');
+    expect(settingsDict?.keys).to.include('language');
+    expect(settingsDict?.keys).to.include('timezone');
+
+    // Check for cache dict with updates
+    const cacheDict = result.dictOperations.find(d => d.varName === 'cache');
+    expect(cacheDict).to.exist;
+    expect(cacheDict?.keys).to.include('expires');
+    expect(cacheDict?.keys).to.include('ttl');
+    expect(cacheDict?.keys).to.include('maxsize');
+    expect(cacheDict?.keys).to.include('compression');
+
+    // Note: allDicts is created empty in a loop, so it won't have keys in a simple parse
+
+    // Check for namespace-scoped defaults dict
+    const defaults = result.dictOperations.find(d => d.varName === 'defaults');
+    expect(defaults).to.exist;
+    expect(defaults?.keys).to.include('retries');
+    expect(defaults?.keys).to.include('timeout');
+    expect(defaults?.keys).to.include('verbose');
+    expect(defaults?.keys).to.include('encoding');
+  });
 });

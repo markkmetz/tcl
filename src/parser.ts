@@ -17,6 +17,7 @@ export function parseDefinitionLine(line: string): DefinitionParseResult | null 
 export interface TclScanResult {
   definitions: Array<{ type: 'proc' | 'method'; name: string; params: string[]; fqName: string; normalizedFqName: string; namespace?: string; line: number }>;
   variables: Array<{ name: string; value: string; line: number }>;
+  dictOperations: Array<{ varName: string; keys: string[]; line: number }>;
   fileNamespaces: Set<string>;
   importedNamespaces: Set<string>;
   importedProcs: Set<string>;
@@ -25,6 +26,7 @@ export interface TclScanResult {
 export function scanTclLines(lines: string[]): TclScanResult {
   const definitions: TclScanResult['definitions'] = [];
   const variables: TclScanResult['variables'] = [];
+  const dictOperations: TclScanResult['dictOperations'] = [];
   const importedNamespaces = new Set<string>();
   const importedProcs = new Set<string>();
   const fileNamespaces = new Set<string>();
@@ -104,8 +106,48 @@ export function scanTclLines(lines: string[]): TclScanResult {
       const vname = vm[1];
       const rawValue = vm[2] ? vm[2].trim() : '';
       variables.push({ name: vname, value: rawValue, line: i });
+
+      // Parse dict create patterns: dict create key1 val1 key2 val2
+      // Handle multiline dict create with backslash continuation
+      let dictValue = rawValue;
+      let lineIdx = i;
+      while (lineIdx < lines.length - 1 && dictValue.trimEnd().endsWith('\\')) {
+        // Remove trailing backslash and continue to next line
+        dictValue = dictValue.trimEnd().slice(0, -1) + ' ' + lines[lineIdx + 1];
+        lineIdx++;
+      }
+      
+      const dictCreateMatch = dictValue.match(/\[dict\s+create\s+((?:[A-Za-z0-9_]+\s+[^\]]+\s*)*)\]/);
+      if (dictCreateMatch && dictCreateMatch[1]) {
+        const pairs = dictCreateMatch[1].trim().split(/\s+/);
+        const keys: string[] = [];
+        for (let j = 0; j < pairs.length; j += 2) {
+          if (pairs[j] && !pairs[j].startsWith('$')) {
+            keys.push(pairs[j]);
+          }
+        }
+        if (keys.length > 0) {
+          dictOperations.push({ varName: vname, keys, line: i });
+        }
+      }
+    }
+
+    // Parse dict set patterns: dict set varname key value
+    const dictSetMatch = line.match(/dict\s+set\s+([A-Za-z0-9_:.]+)\s+([A-Za-z0-9_]+)(?:\s|$)/);
+    if (dictSetMatch && dictSetMatch[1] && dictSetMatch[2]) {
+      const varName = dictSetMatch[1];
+      const key = dictSetMatch[2];
+      // Check if we already have this dict variable
+      const existing = dictOperations.find(d => d.varName === varName);
+      if (existing) {
+        if (!existing.keys.includes(key)) {
+          existing.keys.push(key);
+        }
+      } else {
+        dictOperations.push({ varName, keys: [key], line: i });
+      }
     }
   }
 
-  return { definitions, variables, fileNamespaces, importedNamespaces, importedProcs };
+  return { definitions, variables, dictOperations, fileNamespaces, importedNamespaces, importedProcs };
 }
