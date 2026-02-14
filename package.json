@@ -1,8 +1,13 @@
 {
   "name": "marks-tcl-extension",
+  "publisher": "kmetzenterprises",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "0.0.1",
+  "version": "1.0.14",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/markkmetz/tcl.git"
+  },
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -36,7 +41,7 @@
     ],
     "configuration": {
       "type": "object",
-      "title": "Tcl Extension Settings",
+      "title": "Mark's TCL Extension",
       "properties": {
         "tcl.features.gotoDefinition": {
           "type": "boolean",
@@ -67,13 +72,49 @@
           "type": "boolean",
           "default": true,
           "description": "Enable lint diagnostics (duplicates, unused variables)."
-        }
-        ,
+        },
         "tcl.index.externalPaths": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Additional filesystem folders (absolute paths) to index for Tcl files."
+        },
+        "tcl.runtime.syntaxCheckMode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "local",
+            "remote"
+          ],
+          "default": "local",
+          "enumDescriptions": [
+            "Disable runtime syntax checking",
+            "Use local tclsh for syntax checking",
+            "Use remote syntax check service (requires server running)"
+          ],
+          "markdownDescription": "Choose syntax checking mode:\n- **disabled**: No syntax checking\n- **local**: Use local `tclsh` executable\n- **remote**: Use remote HTTP service\n\nOnly one mode can be active."
+        },
+        "tcl.runtime.tclshPath": {
+          "type": "string",
+          "default": "tclsh",
+          "description": "Path to tclsh executable for local syntax checking. Default: 'tclsh' (searches PATH).",
+          "markdownDescription": "Path to tclsh executable for **local** syntax checking. Only used when `syntaxCheckMode` is set to `local`."
+        },
+        "tcl.runtime.remoteUrl": {
+          "type": "string",
+          "default": "http://localhost:8765/check",
+          "description": "URL of remote TCL syntax check service.",
+          "markdownDescription": "URL of remote TCL syntax check service. Only used when `syntaxCheckMode` is set to `remote`. Example: `http://localhost:8765/check`"
+        },
+        "tcl.runtime.syntaxCheckDelay": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 300,
+          "description": "Delay in seconds before running syntax check after document change.",
+          "markdownDescription": "Delay in seconds before running syntax check after a document change. Higher values reduce checking frequency (useful for slow remote services). Range: 1-300 seconds."
         }
       }
     },
@@ -83,8 +124,7 @@
         "key": "F12",
         "when": "editorTextFocus && editorLangId == 'tcl'"
       }
-    ]
-    ,
+    ],
     "commands": [
       {
         "command": "tcl.formatDocument",
@@ -113,7 +153,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "pretest": "npm run compile",
-    "test": "mocha -r ts-node/register 'test/**/*.test.ts'"
+    "test": "mocha -r ts-node/register 'test/**/*.test.ts'",
+    "build": "npm run compile && npm run package",
+    "package": "npm version patch --no-git-tag-version && vsce package"
   },
   "devDependencies": {
     "typescript": "^4.9.5",
@@ -124,6 +166,7 @@
     "chai": "^4.3.7",
     "ts-node": "^10.9.1",
     "@types/mocha": "^10.0.1",
-    "@types/chai": "^4.3.4"
+    "@types/chai": "^4.3.4",
+    "@vscode/vsce": "^2.20.0"
   }
 }
