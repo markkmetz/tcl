@@ -11,11 +11,19 @@ namespace eval ::ns1 {
   proc qux {z} {
     return $z
   }
+
+  proc zap {p {q 2} {r 3}} {
+    return [list $p $q $r]
+  }
 }
 
 namespace eval ns2 {
   method baz {p} {
     return $p
+  }
+
+  method buzz {a {b 9}} {
+    return [list $a $b]
   }
 }
 
@@ -33,6 +41,14 @@ namespace eval ::Counter {
     puts "asdf"
   }
 
+  proc add {x {y 10}} {
+    return [expr {$x + $y}]
+  }
+
+}
+
+proc gproc {m {n 5}} {
+  return [list $m $n]
 }
 
 namespace import ::ns1::*

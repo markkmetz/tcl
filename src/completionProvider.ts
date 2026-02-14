@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { TclIndexer } from './indexer';
 import { BUILTINS, SNIPPETS } from './builtins';
+import { buildProcSnippet } from './completionUtils';
 
 export class TclCompletionProvider implements vscode.CompletionItemProvider {
   private indexer: TclIndexer;
@@ -42,7 +43,15 @@ async provideCompletionItems(
         md.appendMarkdown(sigs.map(s => `- ${s.params.join(' ')} — ${vscode.workspace.asRelativePath(s.loc.uri)}:${s.loc.range.start.line + 1}`).join('\n'));
         item.documentation = md;
       }
-      item.insertText = new vscode.SnippetString(`${short}$0`);
+      const sigWithParams = sigs.find(s => Array.isArray(s.params) && s.params.length > 0);
+      item.insertText = new vscode.SnippetString(buildProcSnippet(short, sigWithParams?.params));
+
+      if (wordRange) {
+        const lastIdx = prefix.lastIndexOf('::');
+        const replaceStartCol = wordRange.start.character + (lastIdx >= 0 ? lastIdx + 2 : 0);
+        const replaceStart = new vscode.Position(wordRange.start.line, replaceStartCol);
+        item.range = new vscode.Range(replaceStart, wordRange.end);
+      }
       items.push(item);
     }
     return items;
@@ -128,16 +137,7 @@ async provideCompletionItems(
     // build snippet using the first signature that has parameters
     const sigWithParams = signatures.find(s => Array.isArray(s.params) && s.params.length > 0);
 
-    if (sigWithParams) {
-      // placeholders separated by spaces (Tcl style)
-      const snippetText = `${procName} ${sigWithParams.params
-        .map((param, idx) => `\${${idx + 1}:${param}}`)
-        .join(' ')}$0`;
-      item.insertText = new vscode.SnippetString(snippetText);
-    } else {
-      // no-parameter proc
-      item.insertText = new vscode.SnippetString(`${procName}$0`);
-    }
+    item.insertText = new vscode.SnippetString(buildProcSnippet(procName, sigWithParams?.params));
 
     items.push(item);
     added++;

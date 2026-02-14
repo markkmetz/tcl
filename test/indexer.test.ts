@@ -39,13 +39,17 @@ describe('Tcl indexer parsing', () => {
 
     const names = result.definitions.map(d => d.normalizedFqName).sort();
     expect(names).to.deep.equal([
+      'Counter::add',
       'Counter::asdffff',
       'Counter::bump',
       'Counter::lol',
+      'gproc',
       'ns1::bar',
       'ns1::foo',
       'ns1::qux',
-      'ns2::baz'
+      'ns1::zap',
+      'ns2::baz',
+      'ns2::buzz'
     ]);
 
     const foo = result.definitions.find(d => d.normalizedFqName === 'ns1::foo');
@@ -62,6 +66,11 @@ describe('Tcl indexer parsing', () => {
     expect(qux!.namespace).to.equal('ns1');
     expect(qux!.fqName).to.equal('ns1::qux');
 
+    const zap = result.definitions.find(d => d.normalizedFqName === 'ns1::zap');
+    expect(zap).to.not.be.undefined;
+    expect(zap!.params).to.deep.equal(['p', '{q', '2']);
+    expect(zap!.namespace).to.equal('ns1');
+
     const counterLol = result.definitions.find(d => d.normalizedFqName === 'Counter::lol');
     expect(counterLol).to.not.be.undefined;
     expect(counterLol!.namespace).to.equal('Counter');
@@ -73,6 +82,21 @@ describe('Tcl indexer parsing', () => {
     const counterAsd = result.definitions.find(d => d.normalizedFqName === 'Counter::asdffff');
     expect(counterAsd).to.not.be.undefined;
     expect(counterAsd!.namespace).to.equal('Counter');
+
+    const counterAdd = result.definitions.find(d => d.normalizedFqName === 'Counter::add');
+    expect(counterAdd).to.not.be.undefined;
+    expect(counterAdd!.params).to.deep.equal(['x', '{y', '10']);
+    expect(counterAdd!.namespace).to.equal('Counter');
+
+    const buzz = result.definitions.find(d => d.normalizedFqName === 'ns2::buzz');
+    expect(buzz).to.not.be.undefined;
+    expect(buzz!.params).to.deep.equal(['a', '{b', '9']);
+    expect(buzz!.namespace).to.equal('ns2');
+
+    const gproc = result.definitions.find(d => d.normalizedFqName === 'gproc');
+    expect(gproc).to.not.be.undefined;
+    expect(gproc!.params).to.deep.equal(['m', '{n', '5']);
+    expect(gproc!.namespace).to.be.undefined;
   });
 
   it('indexes a second file with distinct namespaces and similar proc names', () => {
