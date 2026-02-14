@@ -44,8 +44,20 @@ export function scanTclLines(lines: string[]): TclScanResult {
       namespaceDepths.push(braceDepth + 1);
     }
 
-    const openBraces = (line.match(/\{/g) || []).length;
-    const closeBraces = (line.match(/\}/g) || []).length;
+    let openBraces = 0;
+    let closeBraces = 0;
+    let inString = false;
+    for (let c = 0; c < line.length; c++) {
+      const ch = line[c];
+      const prev = c > 0 ? line[c - 1] : '';
+      if (ch === '"' && prev !== '\\') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (ch === '{') openBraces++;
+      else if (ch === '}') closeBraces++;
+    }
     braceDepth += openBraces - closeBraces;
 
     while (namespaceDepths.length > 0 && braceDepth < namespaceDepths[namespaceDepths.length - 1]) {

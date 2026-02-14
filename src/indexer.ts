@@ -103,9 +103,21 @@ export class TclIndexer {
         namespaceDepths.push(braceDepth + 1); // the depth after the opening brace
       }
 
-      // count braces on this line to track depth
-      const openBraces = (line.match(/\{/g) || []).length;
-      const closeBraces = (line.match(/\}/g) || []).length;
+      // count braces on this line to track depth (ignore braces inside strings)
+      let openBraces = 0;
+      let closeBraces = 0;
+      let inString = false;
+      for (let c = 0; c < line.length; c++) {
+        const ch = line[c];
+        const prev = c > 0 ? line[c - 1] : '';
+        if (ch === '"' && prev !== '\\') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+        if (ch === '{') openBraces++;
+        else if (ch === '}') closeBraces++;
+      }
       braceDepth += openBraces - closeBraces;
 
       // pop namespace if we've returned to the depth before the namespace block
