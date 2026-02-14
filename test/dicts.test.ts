@@ -158,4 +158,51 @@ describe('Dictionary Parsing', () => {
     expect(config?.keys).to.include('db_port');
     expect(config?.keys).to.include('api_key');
   });
+
+  it('should parse nested dictionaries with parent reference', () => {
+    const lines = [
+      'set config [dict create host localhost paths [dict create data "/var/data" logs "/var/logs"]]'
+    ];
+    const result = scanTclLines(lines);
+    
+    // Parent dict should have 'paths' as a key
+    const configDict = result.dictOperations.find(d => d.varName === 'config');
+    expect(configDict?.keys).to.include('host');
+    expect(configDict?.keys).to.include('paths');
+    
+    // Nested dict should have parent reference
+    const pathsDict = result.dictOperations.find(d => d.varName === 'paths');
+    expect(pathsDict?.parentDict).to.equal('config');
+    expect(pathsDict?.keys).to.include('data');
+    expect(pathsDict?.keys).to.include('logs');
+  });
+
+  it('should track deeply nested dictionaries', () => {
+    const lines = [
+      'set root [dict create level1 [dict create level2 [dict create key value]]]'
+    ];
+    const result = scanTclLines(lines);
+    
+    const rootDict = result.dictOperations.find(d => d.varName === 'root');
+    expect(rootDict?.keys).to.include('level1');
+    
+    const level1 = result.dictOperations.find(d => d.varName === 'level1');
+    expect(level1?.parentDict).to.equal('root');
+    expect(level1?.keys).to.include('level2');
+  });
+
+  it('should allow looking up which dicts contain a key', () => {
+    const lines = [
+      'set config [dict create host localhost port 8080]',
+      'set defaults [dict create host default_host timeout 30]'
+    ];
+    const result = scanTclLines(lines);
+    
+    // Both config and defaults dicts have 'host' key
+    const configDict = result.dictOperations.find(d => d.varName === 'config');
+    expect(configDict?.keys).to.include('host');
+    
+    const defaultsDict = result.dictOperations.find(d => d.varName === 'defaults');
+    expect(defaultsDict?.keys).to.include('host');
+  });
 });

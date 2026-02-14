@@ -167,5 +167,29 @@ describe('Tcl indexer parsing', () => {
     expect(defaults?.keys).to.include('timeout');
     expect(defaults?.keys).to.include('verbose');
     expect(defaults?.keys).to.include('encoding');
+
+    // Check for nested database config
+    const database = result.dictOperations.find(d => d.varName === 'database');
+    expect(database).to.exist;
+    expect(database?.keys).to.include('connection');
+    expect(database?.keys).to.include('credentials');
+    expect(database?.keys).to.include('options');
+
+    // Check nested dicts have parent references
+    const connection = result.dictOperations.find(d => d.varName === 'connection');
+    expect(connection?.parentDict).to.equal('database');
+    expect(connection?.keys).to.include('host');
+    expect(connection?.keys).to.include('port');
+    expect(connection?.keys).to.include('timeout');
+
+    const credentials = result.dictOperations.find(d => d.varName === 'credentials');
+    expect(credentials?.parentDict).to.equal('database');
+    expect(credentials?.keys).to.include('user');
+    expect(credentials?.keys).to.include('password');
+
+    const options = result.dictOperations.find(d => d.varName === 'options');
+    expect(options?.parentDict).to.equal('database');
+    expect(options?.keys).to.include('ssl');
+    expect(options?.keys).to.include('poolsize');
   });
 });

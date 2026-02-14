@@ -4,6 +4,68 @@ export interface DefinitionParseResult {
   params: string[];
 }
 
+function extractDictPairs(content: string): Array<{ key: string; value: string; isDict: boolean; dictKeys?: string[] }> {
+  const pairs: Array<{ key: string; value: string; isDict: boolean; dictKeys?: string[] }> = [];
+  let i = 0;
+  
+  while (i < content.length) {
+    // Skip whitespace
+    while (i < content.length && /\s/.test(content[i])) i++;
+    if (i >= content.length) break;
+    
+    // Read key (word characters)
+    const keyStart = i;
+    while (i < content.length && /[A-Za-z0-9_]/.test(content[i])) i++;
+    const key = content.slice(keyStart, i);
+    
+    if (!key) break;
+    
+    // Skip whitespace
+    while (i < content.length && /\s/.test(content[i])) i++;
+    if (i >= content.length) break;
+    
+    // Read value (could be nested [dict create ...] or simple token)
+    const valueStart = i;
+    let value = '';
+    let isDict = false;
+    let dictKeys: string[] = [];
+    
+    if (content[i] === '[') {
+      // Handle [dict create ...] or other bracket expressions
+      let bracketDepth = 1;
+      i++;
+      const bracketContentStart = i;
+      
+      while (i < content.length && bracketDepth > 0) {
+        if (content[i] === '[') bracketDepth++;
+        else if (content[i] === ']') bracketDepth--;
+        i++;
+      }
+      
+      value = content.slice(valueStart, i);
+      
+      // Check if it's a dict create
+      if (value.includes('dict') && value.includes('create')) {
+        isDict = true;
+        const nestedMatch = value.match(/\[dict\s+create\s+(.*)\]/);
+        if (nestedMatch) {
+          const nestedContent = nestedMatch[1];
+          const nestedPairs = extractDictPairs(nestedContent);
+          dictKeys = nestedPairs.map(p => p.key).filter(k => !k.startsWith('$'));
+        }
+      }
+    } else {
+      // Simple value token
+      while (i < content.length && !/\s/.test(content[i])) i++;
+      value = content.slice(valueStart, i);
+    }
+    
+    pairs.push({ key, value, isDict, dictKeys: dictKeys.length > 0 ? dictKeys : undefined });
+  }
+  
+  return pairs;
+}
+
 export function parseDefinitionLine(line: string): DefinitionParseResult | null {
   const m = line.match(/^\s*(proc|method)\s+([A-Za-z0-9_:.]+)\s+\{([^}]*)\}/);
   if (!m) return null;
@@ -17,7 +79,7 @@ export function parseDefinitionLine(line: string): DefinitionParseResult | null 
 export interface TclScanResult {
   definitions: Array<{ type: 'proc' | 'method'; name: string; params: string[]; fqName: string; normalizedFqName: string; namespace?: string; line: number }>;
   variables: Array<{ name: string; value: string; line: number }>;
-  dictOperations: Array<{ varName: string; keys: string[]; line: number }>;
+  dictOperations: Array<{ varName: string; keys: string[]; line: number; parentDict?: string }>;
   fileNamespaces: Set<string>;
   importedNamespaces: Set<string>;
   importedProcs: Set<string>;
@@ -117,15 +179,23 @@ export function scanTclLines(lines: string[]): TclScanResult {
         lineIdx++;
       }
       
-      const dictCreateMatch = dictValue.match(/\[dict\s+create\s+((?:[A-Za-z0-9_]+\s+[^\]]+\s*)*)\]/);
+      const dictCreateMatch = dictValue.match(/\[dict\s+create\s+(.*)\]/);
       if (dictCreateMatch && dictCreateMatch[1]) {
-        const pairs = dictCreateMatch[1].trim().split(/\s+/);
+        const pairsContent = dictCreateMatch[1];
+        const pairs = extractDictPairs(pairsContent);
         const keys: string[] = [];
-        for (let j = 0; j < pairs.length; j += 2) {
-          if (pairs[j] && !pairs[j].startsWith('$')) {
-            keys.push(pairs[j]);
+        
+        for (const pair of pairs) {
+          if (!pair.key.startsWith('$')) {
+            keys.push(pair.key);
+            
+            // If this pair contains a nested dict, add it as a separate dictOperation
+            if (pair.isDict && pair.dictKeys) {
+              dictOperations.push({ varName: pair.key, keys: pair.dictKeys, line: i, parentDict: vname });
+            }
           }
         }
+        
         if (keys.length > 0) {
           dictOperations.push({ varName: vname, keys, line: i });
         }

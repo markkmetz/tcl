@@ -44,6 +44,23 @@ set cache [dict create expires 3600 ttl 1800]
 dict set cache maxsize 1000
 dict set cache compression gzip
 
+# Nested database configuration
+set database [dict create \
+  connection [dict create \
+    host db.example.com \
+    port 5432 \
+    timeout 30 \
+  ] \
+  credentials [dict create \
+    user admin \
+    password secret \
+  ] \
+  options [dict create \
+    ssl true \
+    poolsize 10 \
+  ] \
+]
+
 # Proc with dict operations
 proc mergeConfigs {baseConfig overrides} {
   foreach {key value} $overrides {
