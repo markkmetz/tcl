@@ -39,6 +39,24 @@
         "path": "./syntaxes/tcl.tmLanguage.json"
       }
     ],
+    "semanticTokenTypes": [
+      {
+        "id": "dictKey",
+        "superType": "property",
+        "description": "Dictionary keys"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "tcl",
+        "scopes": {
+          "dictKey": [
+            "variable.other.dictionary-key.tcl",
+            "variable.other.property.tcl"
+          ]
+        }
+      }
+    ],
     "configuration": {
       "type": "object",
       "title": "Mark's TCL Extension",

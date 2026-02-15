@@ -10,8 +10,131 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
 
   async provideDocumentSemanticTokens(document: vscode.TextDocument, token: vscode.CancellationToken): Promise<vscode.SemanticTokens> {
     const builder = new vscode.SemanticTokensBuilder();
-    const tokenTypeMap: Record<string, number> = { variable: 0, function: 1, parameter: 2, method: 3 };
+    const tokenTypeMap: Record<string, number> = { variable: 0, function: 1, parameter: 2, method: 3, dictKey: 4 };
     const seenDefs = new Set<string>();
+
+    type WordToken = { text: string; start: number; end: number };
+
+    const tokenizeWords = (text: string, base = 0): WordToken[] => {
+      const tokens: WordToken[] = [];
+      let i = 0;
+      while (i < text.length) {
+        while (i < text.length && /\s/.test(text[i])) i += 1;
+        if (i >= text.length) break;
+
+        const start = i;
+        let inQuote = false;
+        let braceDepth = 0;
+        let bracketDepth = 0;
+        let escaped = false;
+
+        while (i < text.length) {
+          const ch = text[i];
+
+          if (escaped) {
+            escaped = false;
+            i += 1;
+            continue;
+          }
+
+          if (ch === '\\') {
+            escaped = true;
+            i += 1;
+            continue;
+          }
+
+          if (inQuote) {
+            if (ch === '"') inQuote = false;
+            i += 1;
+            continue;
+          }
+
+          if (ch === '"') {
+            inQuote = true;
+            i += 1;
+            continue;
+          }
+
+          if (ch === '{') {
+            braceDepth += 1;
+            i += 1;
+            continue;
+          }
+          if (ch === '}' && braceDepth > 0) {
+            braceDepth -= 1;
+            i += 1;
+            continue;
+          }
+
+          if (ch === '[') {
+            bracketDepth += 1;
+            i += 1;
+            continue;
+          }
+          if (ch === ']' && bracketDepth > 0) {
+            bracketDepth -= 1;
+            i += 1;
+            continue;
+          }
+
+          if (/\s/.test(ch) && !inQuote && braceDepth === 0 && bracketDepth === 0) break;
+          i += 1;
+        }
+
+        tokens.push({ text: text.slice(start, i), start: base + start, end: base + i });
+      }
+      return tokens;
+    };
+
+    const normalizeKeyToken = (word: string): string => {
+      if (word.startsWith('{') && word.endsWith('}') && word.length >= 2) return word.slice(1, -1);
+      if (word.startsWith('"') && word.endsWith('"') && word.length >= 2) return word.slice(1, -1);
+      return word;
+    };
+
+    const keyWordPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+    const pushDictKey = (line: number, start: number, tokenText: string) => {
+      const normalized = normalizeKeyToken(tokenText);
+      if (!keyWordPattern.test(normalized)) return;
+
+      let keyStart = start;
+      if ((tokenText.startsWith('{') && tokenText.endsWith('}')) || (tokenText.startsWith('"') && tokenText.endsWith('"'))) {
+        keyStart += 1;
+      }
+
+      builder.push(line, keyStart, normalized.length, tokenTypeMap['dictKey'], 0);
+    };
+
+    const highlightDictKeysOnLine = (lineNumber: number, lineText: string) => {
+      const tokens = tokenizeWords(lineText);
+      if (tokens.length < 4) return;
+
+      if (tokens[0].text === 'dict' && tokens[1].text === 'set' && tokens.length >= 5) {
+        for (let i = 3; i < tokens.length - 1; i += 1) {
+          pushDictKey(lineNumber, tokens[i].start, tokens[i].text);
+        }
+      }
+
+      if (tokens[0].text === 'dict' && tokens[1].text === 'create' && tokens.length >= 4) {
+        for (let i = 2; i < tokens.length; i += 2) {
+          pushDictKey(lineNumber, tokens[i].start, tokens[i].text);
+        }
+      }
+
+      const inlineCreateRegex = /\[dict\s+create\s+([^\]]+)\]/g;
+      let match: RegExpExecArray | null;
+      while ((match = inlineCreateRegex.exec(lineText)) !== null) {
+        if (!match[1]) continue;
+        const content = match[1];
+        const contentOffset = (match.index ?? 0) + match[0].indexOf(content);
+        const innerTokens = tokenizeWords(content, contentOffset);
+
+        for (let i = 0; i < innerTokens.length; i += 2) {
+          pushDictKey(lineNumber, innerTokens[i].start, innerTokens[i].text);
+        }
+      }
+    };
 
     const getNameSpan = (lineText: string, startCol: number, fallbackName: string) => {
       const slice = lineText.slice(startCol);
@@ -191,6 +314,12 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       const col = v.loc.range.start.character;
       builder.push(line, col, v.name.length, tokenTypeMap['variable'], 0);
     }
+
+    // highlight dictionary keys in common dict set/create forms
+    for (let line = 0; line < document.lineCount; line++) {
+      highlightDictKeysOnLine(line, document.lineAt(line).text);
+    }
+
     return builder.build();
   }
 
