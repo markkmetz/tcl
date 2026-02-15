@@ -6,6 +6,7 @@ import { TclCompletionProvider } from './completionProvider';
 import { TclSignatureProvider } from './signatureProvider';
 import { TclSemanticProvider } from './semanticProvider';
 import { TclFormatter } from './formatter';
+import { TclSyntaxChecker } from './syntaxChecker';
 
 export function activate(context: vscode.ExtensionContext) {
   const indexer = new TclIndexer();
@@ -18,6 +19,10 @@ export function activate(context: vscode.ExtensionContext) {
   let sigDisposable: vscode.Disposable | undefined;
   let semDisposable: vscode.Disposable | undefined;
   let diagnostics: vscode.DiagnosticCollection | undefined;
+  let syntaxDiagnostics: vscode.DiagnosticCollection | undefined;
+
+  // syntax checker
+  const syntaxChecker = new TclSyntaxChecker();
 
   const config = () => vscode.workspace.getConfiguration();
 
@@ -73,7 +78,7 @@ export function activate(context: vscode.ExtensionContext) {
     // lint diagnostics
     if (cfg.lint !== false) {
       if (!diagnostics) {
-        diagnostics = vscode.languages.createDiagnosticCollection('tcl');
+        diagnostics = vscode.languages.createDiagnosticCollection('tcl-lint');
         context.subscriptions.push(diagnostics);
       }
       const runLint = async () => {
@@ -87,8 +92,76 @@ export function activate(context: vscode.ExtensionContext) {
     } else if (diagnostics) { diagnostics.clear(); diagnostics.dispose(); diagnostics = undefined; }
   };
 
+  // syntax checking with tclsh
+  const setupSyntaxChecking = () => {
+    const mode = config().get<string>('tcl.runtime.syntaxCheckMode', 'local');
+    
+    if (mode !== 'disabled') {
+      if (!syntaxDiagnostics) {
+        syntaxDiagnostics = vscode.languages.createDiagnosticCollection('tcl-syntax');
+        context.subscriptions.push(syntaxDiagnostics);
+      }
+      
+      // Check all open TCL documents
+      const checkAllDocuments = () => {
+        vscode.workspace.textDocuments.forEach(doc => {
+          if (doc.languageId === 'tcl') {
+            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!);
+          }
+        });
+      };
+      
+      // Check on document open
+      context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument(doc => {
+          if (doc.languageId === 'tcl') {
+            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!);
+          }
+        })
+      );
+      
+      // Check on document change
+      context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(e => {
+          if (e.document.languageId === 'tcl') {
+            syntaxChecker.scheduleCheck(e.document, syntaxDiagnostics!);
+          }
+        })
+      );
+      
+      // Check on document save
+      context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(doc => {
+          if (doc.languageId === 'tcl') {
+            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!);
+          }
+        })
+      );
+      
+      // Clear diagnostics on document close
+      context.subscriptions.push(
+        vscode.workspace.onDidCloseTextDocument(doc => {
+          if (doc.languageId === 'tcl') {
+            syntaxDiagnostics!.delete(doc.uri);
+          }
+        })
+      );
+      
+      // Initial check of all open documents
+      checkAllDocuments();
+    } else {
+      // Clear and dispose if disabled
+      if (syntaxDiagnostics) {
+        syntaxDiagnostics.clear();
+        syntaxDiagnostics.dispose();
+        syntaxDiagnostics = undefined;
+      }
+    }
+  };
+
   // initial registration
   registerProviders();
+  setupSyntaxChecking();
 
   // register formatter and format command
   const formatter = new TclFormatter();
@@ -136,6 +209,7 @@ export function activate(context: vscode.ExtensionContext) {
   // respond to configuration changes
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
     if (e.affectsConfiguration('tcl.features')) registerProviders();
+    if (e.affectsConfiguration('tcl.runtime')) setupSyntaxChecking();
     if (e.affectsConfiguration('tcl.index.externalPaths')) {
       const external = vscode.workspace.getConfiguration('tcl').get<string[]>('index.externalPaths') || [];
       indexer.setExternalPaths(external, context);
