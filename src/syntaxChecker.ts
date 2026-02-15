@@ -79,6 +79,7 @@ export class TclSyntaxChecker {
             `Failed to run tclsh: ${err.message}. Check tcl.runtime.tclshPath setting.`,
             vscode.DiagnosticSeverity.Error
           );
+          diagnostic.source = 'tcl-syntax';
           
           // Clean up temp file
           try { fs.unlinkSync(tempFile); } catch {}
@@ -110,6 +111,7 @@ export class TclSyntaxChecker {
           `Syntax check error: ${err.message}`,
           vscode.DiagnosticSeverity.Error
         );
+        diagnostic.source = 'tcl-syntax';
         resolve({ uri: document.uri, diagnostics: [diagnostic] });
       }
     });
@@ -152,6 +154,7 @@ export class TclSyntaxChecker {
         `Remote syntax check failed: ${err.message}`,
         vscode.DiagnosticSeverity.Warning
       );
+      diagnostic.source = 'tcl-syntax';
       return { uri: document.uri, diagnostics: [diagnostic] };
     }
   }
@@ -233,14 +236,18 @@ export class TclSyntaxChecker {
       }
       
       const range = new vscode.Range(targetLine, 0, targetLine, 1000);
-      diagnostics.push(new vscode.Diagnostic(range, currentError, severity));
+      const diagnostic = new vscode.Diagnostic(range, currentError, severity);
+      diagnostic.source = 'tcl-syntax';
+      diagnostics.push(diagnostic);
     }
     
     // If no specific error was parsed but we have error text, create a general error
     if (diagnostics.length === 0 && errorText.trim().length > 0) {
       const cleanError = errorText.replace(/^.*ERROR:\s*/i, '').trim();
       const range = new vscode.Range(errorLine, 0, errorLine, 1000);
-      diagnostics.push(new vscode.Diagnostic(range, cleanError, vscode.DiagnosticSeverity.Error));
+      const diagnostic = new vscode.Diagnostic(range, cleanError, vscode.DiagnosticSeverity.Error);
+      diagnostic.source = 'tcl-syntax';
+      diagnostics.push(diagnostic);
     }
     
     return diagnostics;

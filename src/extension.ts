@@ -7,6 +7,7 @@ import { TclSignatureProvider } from './signatureProvider';
 import { TclSemanticProvider } from './semanticProvider';
 import { TclFormatter } from './formatter';
 import { TclSyntaxChecker } from './syntaxChecker';
+import { TclSyntaxCodeActionProvider } from './syntaxCodeActionProvider';
 
 export function activate(context: vscode.ExtensionContext) {
   const indexer = new TclIndexer();
@@ -18,6 +19,7 @@ export function activate(context: vscode.ExtensionContext) {
   let completionDisposable: vscode.Disposable | undefined;
   let sigDisposable: vscode.Disposable | undefined;
   let semDisposable: vscode.Disposable | undefined;
+  let syntaxCodeActionDisposable: vscode.Disposable | undefined;
   let diagnostics: vscode.DiagnosticCollection | undefined;
   let syntaxDiagnostics: vscode.DiagnosticCollection | undefined;
 
@@ -101,6 +103,15 @@ export function activate(context: vscode.ExtensionContext) {
         syntaxDiagnostics = vscode.languages.createDiagnosticCollection('tcl-syntax');
         context.subscriptions.push(syntaxDiagnostics);
       }
+
+      if (!syntaxCodeActionDisposable) {
+        syntaxCodeActionDisposable = vscode.languages.registerCodeActionsProvider(
+          { language: 'tcl' },
+          new TclSyntaxCodeActionProvider(),
+          { providedCodeActionKinds: TclSyntaxCodeActionProvider.providedCodeActionKinds }
+        );
+        context.subscriptions.push(syntaxCodeActionDisposable);
+      }
       
       // Check all open TCL documents
       const checkAllDocuments = () => {
@@ -156,6 +167,10 @@ export function activate(context: vscode.ExtensionContext) {
         syntaxDiagnostics.dispose();
         syntaxDiagnostics = undefined;
       }
+      if (syntaxCodeActionDisposable) {
+        syntaxCodeActionDisposable.dispose();
+        syntaxCodeActionDisposable = undefined;
+      }
     }
   };
 
@@ -205,6 +220,13 @@ export function activate(context: vscode.ExtensionContext) {
     try { await indexer.buildIndex(); vscode.window.showInformationMessage('Tcl index rebuilt.'); } catch (e) { /*ignore*/ }
   });
   context.subscriptions.push(rebuildCmd);
+
+  const syntaxTipsCmd = vscode.commands.registerCommand('tcl.syntaxQuickFix.showTips', () => {
+    vscode.window.showInformationMessage(
+      'Tcl syntax tips: check matching {}, [], and quotes ("), then re-run syntax check by saving the file.'
+    );
+  });
+  context.subscriptions.push(syntaxTipsCmd);
 
   // respond to configuration changes
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
