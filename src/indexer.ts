@@ -6,6 +6,7 @@ export class TclIndexer {
   private variableIndex: Map<string, { loc: vscode.Location; value: string }[]> = new Map();
   private procIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
   private methodIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
+  private dictIndex: Map<string, { keys: Set<string>; line: number; parentDict?: string }> = new Map();
   private watcher?: vscode.FileSystemWatcher;
   private externalPaths: string[] = [];
   private externalWatchers: vscode.FileSystemWatcher[] = [];
@@ -32,6 +33,7 @@ export class TclIndexer {
     this.variableIndex.clear();
     this.procIndex.clear();
     this.methodIndex.clear();
+    this.dictIndex.clear();
     this.fileImports.clear();
     const files = await vscode.workspace.findFiles('**/*.tcl');
     const allFiles = [...files];
@@ -205,6 +207,52 @@ export class TclIndexer {
           varArr.push({ loc: vloc, value: rawValue });
           this.variableIndex.set(vname, varArr);
         }
+
+        // Parse dict create: set varname [dict create key1 val1 key2 val2]
+        // Handle multiline dict create with backslash continuation
+        let dictValue = rawValue;
+        let lineIdx = i;
+        while (lineIdx < lines.length - 1 && dictValue.trimEnd().endsWith('\\')) {
+          // Remove trailing backslash and continue to next line
+          dictValue = dictValue.trimEnd().slice(0, -1) + ' ' + lines[lineIdx + 1];
+          lineIdx++;
+        }
+        
+        const dictCreateMatch = dictValue.match(/\[dict\s+create\s+(.*)\]/);
+        if (dictCreateMatch && dictCreateMatch[1]) {
+          const pairsContent = dictCreateMatch[1];
+          // Import the parser's extractDictPairs function
+          const parsedPairs = this.extractDictPairs(pairsContent);
+          const keys = new Set<string>();
+          
+          for (const pair of parsedPairs) {
+            if (!pair.key.startsWith('$')) {
+              keys.add(pair.key);
+              
+              // If this pair contains a nested dict, add it as a separate entry
+              if (pair.isDict && pair.dictKeys) {
+                this.dictIndex.set(pair.key, { keys: new Set(pair.dictKeys), line: i, parentDict: vname });
+              }
+            }
+          }
+          
+          if (keys.size > 0) {
+            this.dictIndex.set(vname, { keys, line: i });
+          }
+        }
+
+        // Parse dict set: dict set varname key value
+        const dictSetMatch = line.match(/dict\s+set\s+([A-Za-z0-9_:.]+)\s+([A-Za-z0-9_]+)/);
+        if (dictSetMatch && dictSetMatch[1]) {
+          const dictVar = dictSetMatch[1];
+          const key = dictSetMatch[2];
+          const existing = this.dictIndex.get(dictVar);
+          if (existing) {
+            existing.keys.add(key);
+          } else {
+            this.dictIndex.set(dictVar, { keys: new Set([key]), line: i });
+          }
+        }
       }
     }
 
@@ -246,6 +294,8 @@ export class TclIndexer {
         else this.methodIndex.delete(k);
       }
     }
+    // Clear dicts from removed file (simplified: clear all since we track by var name only)
+    this.dictIndex.clear();
     // also clean up fileImports
     this.fileImports.delete(uri.toString());
     // Note: don't fire _onDidIndex here as this is called from indexFile
@@ -569,5 +619,103 @@ export class TclIndexer {
     const marr = this.methodIndex.get(simple) || [];
     for (const m of marr) if (includeEntry(m)) results.push({ params: m.params, loc: m.loc, fqName: m.normalizedFqName });
     return results;
+  }
+
+  getDictKeys(varName: string): string[] {
+    const dict = this.dictIndex.get(varName);
+    if (!dict) return [];
+    return Array.from(dict.keys).sort();
+  }
+
+  getParentDict(varName: string): string | undefined {
+    const dict = this.dictIndex.get(varName);
+    return dict?.parentDict;
+  }
+
+  getDictsContainingKey(key: string): Array<{ dictName: string; keys: string[]; parentDict?: string }> {
+    const results: Array<{ dictName: string; keys: string[]; parentDict?: string }> = [];
+    for (const [dictName, dictInfo] of this.dictIndex.entries()) {
+      if (dictInfo.keys.has(key)) {
+        results.push({
+          dictName,
+          keys: Array.from(dictInfo.keys).sort(),
+          parentDict: dictInfo.parentDict
+        });
+      }
+    }
+    return results;
+  }
+
+  listDictionaries(): Array<{ name: string; keys: string[]; parentDict?: string }> {
+    const results: Array<{ name: string; keys: string[]; parentDict?: string }> = [];
+    for (const [name, dictInfo] of this.dictIndex.entries()) {
+      results.push({
+        name,
+        keys: Array.from(dictInfo.keys).sort(),
+        parentDict: dictInfo.parentDict
+      });
+    }
+    return results;
+  }
+
+  private extractDictPairs(content: string): Array<{ key: string; value: string; isDict: boolean; dictKeys?: string[] }> {
+    const pairs: Array<{ key: string; value: string; isDict: boolean; dictKeys?: string[] }> = [];
+    let i = 0;
+    
+    while (i < content.length) {
+      // Skip whitespace
+      while (i < content.length && /\s/.test(content[i])) i++;
+      if (i >= content.length) break;
+      
+      // Read key (word characters)
+      const keyStart = i;
+      while (i < content.length && /[A-Za-z0-9_]/.test(content[i])) i++;
+      const key = content.slice(keyStart, i);
+      
+      if (!key) break;
+      
+      // Skip whitespace
+      while (i < content.length && /\s/.test(content[i])) i++;
+      if (i >= content.length) break;
+      
+      // Read value (could be nested [dict create ...] or simple token)
+      const valueStart = i;
+      let value = '';
+      let isDict = false;
+      let dictKeys: string[] = [];
+      
+      if (content[i] === '[') {
+        // Handle [dict create ...] or other bracket expressions
+        let bracketDepth = 1;
+        i++;
+        
+        while (i < content.length && bracketDepth > 0) {
+          if (content[i] === '[') bracketDepth++;
+          else if (content[i] === ']') bracketDepth--;
+          i++;
+        }
+        
+        value = content.slice(valueStart, i);
+        
+        // Check if it's a dict create
+        if (value.includes('dict') && value.includes('create')) {
+          isDict = true;
+          const nestedMatch = value.match(/\[dict\s+create\s+(.*)\]/);
+          if (nestedMatch) {
+            const nestedContent = nestedMatch[1];
+            const nestedPairs = this.extractDictPairs(nestedContent);
+            dictKeys = nestedPairs.map(p => p.key).filter(k => !k.startsWith('$'));
+          }
+        }
+      } else {
+        // Simple value token
+        while (i < content.length && !/\s/.test(content[i])) i++;
+        value = content.slice(valueStart, i);
+      }
+      
+      pairs.push({ key, value, isDict, dictKeys: dictKeys.length > 0 ? dictKeys : undefined });
+    }
+    
+    return pairs;
   }
 }

@@ -25,6 +25,94 @@ async provideCompletionItems(
   const MAX_GLOBAL_PROCS = 50;
   const prefixLower = prefix.toLowerCase();
 
+  // Check if we're completing dict variable name after "dict get "
+  // Pattern: dict get <cursor> or dict get $<partial>
+  const lineText = document.lineAt(position.line).text;
+  const textBeforeCursor = lineText.substring(0, position.character);
+  const dictVarMatch = textBeforeCursor.match(/dict\s+get\s+\$?(\w*)$/);
+  
+  if (dictVarMatch && !textBeforeCursor.match(/dict\s+get\s+\$\w+\s+\w/)) {
+    // We're at dict get position, suggest available dictionaries
+    const partial = dictVarMatch[1] || '';
+    const dicts = this.indexer.listDictionaries();
+    
+    for (const dict of dicts) {
+      // Skip nested dicts (they have parentDict)
+      if (dict.parentDict) continue;
+      
+      if (partial && !dict.name.toLowerCase().startsWith(partial.toLowerCase())) continue;
+      
+      const dictItem = new vscode.CompletionItem(`$${dict.name}`, vscode.CompletionItemKind.Variable);
+      dictItem.detail = `Dictionary with keys: ${dict.keys.join(', ')}`;
+      dictItem.insertText = dict.name;
+      dictItem.sortText = `0_${dict.name}`; // Sort dicts first
+      
+      // Add documentation showing all keys
+      const md = new vscode.MarkdownString();
+      md.appendMarkdown(`**Dictionary**: \`$${dict.name}\`\n\n`);
+      md.appendMarkdown(`**Keys**: ${dict.keys.map(k => `\`${k}\``).join(', ')}\n`);
+      dictItem.documentation = md;
+      
+      items.push(dictItem);
+    }
+    
+    // If we found dicts, return them
+    if (items.length > 0) {
+      return items;
+    }
+  }
+
+  // Check if we're completing dict get keys
+  // Pattern: dict get $varName <cursor> or dict get $varName key1 <cursor>
+  const dictGetMatch = textBeforeCursor.match(/dict\s+get\s+\$(\w+)(?:\s+(\w+))*\s*$/);
+  
+  if (dictGetMatch) {
+    const varName = dictGetMatch[1];
+    const previousKeys = dictGetMatch[2] ? textBeforeCursor.match(/dict\s+get\s+\$\w+\s+([\w\s]+)$/)?.[1].trim().split(/\s+/) : [];
+    
+    // If we have previous keys, try to find the nested dict
+    let targetDict = varName;
+    if (previousKeys && previousKeys.length > 0) {
+      // Check if the last key is a nested dict
+      const lastKey = previousKeys[previousKeys.length - 1];
+      const dictKeys = this.indexer.getDictKeys(varName);
+      
+      // Find if this key points to a nested dict
+      if (dictKeys.includes(lastKey)) {
+        // Check if there's a dict with this name that has varName as parent
+        targetDict = lastKey;
+      }
+    }
+    
+    const dictKeys = this.indexer.getDictKeys(targetDict);
+    
+    if (dictKeys.length > 0) {
+      for (const key of dictKeys) {
+        if (prefix && !key.toLowerCase().startsWith(prefixLower)) continue;
+        const keyItem = new vscode.CompletionItem(key, vscode.CompletionItemKind.Property);
+        keyItem.detail = `Dictionary key in $${varName}`;
+        
+        // Check if this key is itself a nested dict
+        const parentDict = this.indexer.getParentDict(key);
+        if (parentDict === targetDict) {
+          const nestedKeys = this.indexer.getDictKeys(key);
+          if (nestedKeys.length > 0) {
+            keyItem.detail += ` (nested dict with keys: ${nestedKeys.join(', ')})`;
+          }
+        }
+        
+        keyItem.insertText = key;
+        keyItem.sortText = `0_${key}`; // Sort dict keys first
+        items.push(keyItem);
+      }
+      
+      // If we found dict keys, return early to avoid showing other completions
+      if (items.length > 0) {
+        return items;
+      }
+    }
+  }
+
   // namespace-specific completion: user typed Namespace::partial or ::Namespace::partial
   const nsMatch = prefix.match(/^(::)?([A-Za-z0-9_:]+)::([A-Za-z0-9_]*)$/);
   if (nsMatch) {

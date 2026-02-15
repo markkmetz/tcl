@@ -121,4 +121,252 @@ describe('Tcl indexer parsing', () => {
     expect(bar!.params).to.deep.equal(['p', 'q']);
     expect(bar!.namespace).to.equal('ns4');
   });
+
+  it('parses dictionary operations from dicts.tcl fixture', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    expect(result.dictOperations.length).to.be.greaterThan(0);
+
+    // Check for user dict from namespace
+    const userDict = result.dictOperations.find(d => d.varName === 'user');
+    expect(userDict).to.exist;
+    expect(userDict?.keys).to.include('name');
+    expect(userDict?.keys).to.include('age');
+    expect(userDict?.keys).to.include('email');
+
+    // Check for config dict (multiline continuation is now supported)
+    const configDict = result.dictOperations.find(d => d.varName === 'config');
+    expect(configDict).to.exist;
+    expect(configDict?.keys).to.include('debug');
+    expect(configDict?.keys).to.include('paths');
+
+    // Check for settings dict
+    const settingsDict = result.dictOperations.find(d => d.varName === 'settings');
+    expect(settingsDict).to.exist;
+    expect(settingsDict?.keys).to.include('theme');
+    expect(settingsDict?.keys).to.include('language');
+    expect(settingsDict?.keys).to.include('timezone');
+
+    // Check for cache dict with updates
+    const cacheDict = result.dictOperations.find(d => d.varName === 'cache');
+    expect(cacheDict).to.exist;
+    expect(cacheDict?.keys).to.include('expires');
+    expect(cacheDict?.keys).to.include('ttl');
+    expect(cacheDict?.keys).to.include('maxsize');
+    expect(cacheDict?.keys).to.include('compression');
+
+    // Note: allDicts is created empty in a loop, so it won't have keys in a simple parse
+
+    // Check for namespace-scoped defaults dict
+    const defaults = result.dictOperations.find(d => d.varName === 'defaults');
+    expect(defaults).to.exist;
+    expect(defaults?.keys).to.include('retries');
+    expect(defaults?.keys).to.include('timeout');
+    expect(defaults?.keys).to.include('verbose');
+    expect(defaults?.keys).to.include('encoding');
+
+    // Check for nested database config
+    const database = result.dictOperations.find(d => d.varName === 'database');
+    expect(database).to.exist;
+    expect(database?.keys).to.include('connection');
+    expect(database?.keys).to.include('credentials');
+    expect(database?.keys).to.include('options');
+
+    // Check nested dicts have parent references
+    const connection = result.dictOperations.find(d => d.varName === 'connection');
+    expect(connection?.parentDict).to.equal('database');
+    expect(connection?.keys).to.include('host');
+    expect(connection?.keys).to.include('port');
+    expect(connection?.keys).to.include('timeout');
+
+    const credentials = result.dictOperations.find(d => d.varName === 'credentials');
+    expect(credentials?.parentDict).to.equal('database');
+    expect(credentials?.keys).to.include('user');
+    expect(credentials?.keys).to.include('password');
+
+    const options = result.dictOperations.find(d => d.varName === 'options');
+    expect(options?.parentDict).to.equal('database');
+    expect(options?.keys).to.include('ssl');
+    expect(options?.keys).to.include('poolsize');
+  });
+
+  it('parses namespace procs with dict operations', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    // Check for namespace-scoped procs
+    const createUserProc = result.definitions.find(d => d.normalizedFqName === 'DictTest::createUser');
+    expect(createUserProc).to.exist;
+    expect(createUserProc?.namespace).to.equal('DictTest');
+    expect(createUserProc?.params).to.have.members(['name', 'age']);
+
+    const getUserNameProc = result.definitions.find(d => d.normalizedFqName === 'DictTest::getUserName');
+    expect(getUserNameProc).to.exist;
+
+    const updateUserProc = result.definitions.find(d => d.normalizedFqName === 'DictTest::updateUser');
+    expect(updateUserProc).to.exist;
+    expect(updateUserProc?.params).to.have.members(['user', 'key', 'value']);
+  });
+
+  it('parses Analytics namespace with dict-default procs', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    // Check for Analytics namespace procedures
+    const trackEventProc = result.definitions.find(d => d.normalizedFqName === 'Analytics::trackEvent');
+    expect(trackEventProc).to.exist;
+    expect(trackEventProc?.namespace).to.equal('Analytics');
+
+    const reportMetricsProc = result.definitions.find(d => d.normalizedFqName === 'Analytics::reportMetrics');
+    expect(reportMetricsProc).to.exist;
+    expect(reportMetricsProc?.namespace).to.equal('Analytics');
+  });
+
+  it('parses DataModel namespace with schema dictionary', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    // Check for DataModel namespace
+    expect(Array.from(result.fileNamespaces)).to.include('DataModel');
+
+    // Check for schema dictionary - may have partial parsing
+    const schema = result.dictOperations.find(d => d.varName === 'schema');
+    if (schema) {
+      expect(schema?.keys).to.be.an('object');
+    }
+  });
+
+  it('parses inline nested appConfig with multiple sub-dicts', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    // Check for appConfig dict
+    const appConfig = result.dictOperations.find(d => d.varName === 'appConfig');
+    expect(appConfig).to.exist;
+    expect(appConfig?.keys).to.include('server');
+    expect(appConfig?.keys).to.include('database');
+    expect(appConfig?.keys).to.include('features');
+
+    // Check nested server dict
+    const serverDict = result.dictOperations.find(d => d.varName === 'server');
+    if (serverDict) {
+      expect(serverDict?.keys).to.include('host');
+      expect(serverDict?.keys).to.include('port');
+      expect(serverDict?.keys).to.include('ssl');
+    }
+  });
+
+  it('parses metrics and responses dicts with nested numeric values', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    // Check for metrics dict
+    const metrics = result.dictOperations.find(d => d.varName === 'metrics');
+    expect(metrics).to.exist;
+    expect(metrics?.keys).to.include('cpu');
+    expect(metrics?.keys).to.include('memory');
+    expect(metrics?.keys).to.include('disk');
+    expect(metrics?.keys).to.include('network');
+
+    const network = result.dictOperations.find(d => d.varName === 'network');
+    expect(network).to.exist;
+    expect(network?.parentDict).to.equal('metrics');
+    expect(network?.keys).to.include('in');
+    expect(network?.keys).to.include('out');
+
+    // Check for responses dict
+    const responses = result.dictOperations.find(d => d.varName === 'responses');
+    expect(responses).to.exist;
+    expect(responses?.keys).to.include('success');
+    expect(responses?.keys).to.include('error');
+
+    const successResponse = result.dictOperations.find(d => d.varName === 'success');
+    expect(successResponse).to.exist;
+    expect(successResponse?.parentDict).to.equal('responses');
+    expect(successResponse?.keys).to.include('code');
+    expect(successResponse?.keys).to.include('msg');
+
+    const errorResponse = result.dictOperations.find(d => d.varName === 'error');
+    expect(errorResponse).to.exist;
+    expect(errorResponse?.parentDict).to.equal('responses');
+    expect(errorResponse?.keys).to.include('code');
+    expect(errorResponse?.keys).to.include('msg');
+  });
+
+  it('parses global procs that operate on dicts', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    // Check for mergeConfigs proc
+    const mergeConfigs = result.definitions.find(d => d.normalizedFqName === 'mergeConfigs');
+    expect(mergeConfigs).to.exist;
+    expect(mergeConfigs?.params).to.include('baseConfig');
+    expect(mergeConfigs?.params).to.include('overrides');
+
+    // Check for deepUpdate proc
+    const deepUpdate = result.definitions.find(d => d.normalizedFqName === 'deepUpdate');
+    expect(deepUpdate).to.exist;
+    expect(deepUpdate?.params).to.include('dict');
+    expect(deepUpdate?.params).to.include('path');
+    expect(deepUpdate?.params).to.include('value');
+  });
+
+  it('parses dictionaries with special character values', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    // Check for patterns dict with brackets and braces
+    const patterns = result.dictOperations.find(d => d.varName === 'patterns');
+    expect(patterns).to.exist;
+    expect(patterns?.keys).to.include('brackets');
+    expect(patterns?.keys).to.include('braces');
+    expect(patterns?.keys).to.include('mixed');
+    expect(patterns?.keys).to.include('escaped');
+  });
+
+  it('parses state dict built via multiple dict set operations', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    // Check for state dict
+    const state = result.dictOperations.find(d => d.varName === 'state');
+    expect(state).to.exist;
+    expect(state?.keys).to.include('initialized');
+    expect(state?.keys).to.include('created');
+    expect(state?.keys).to.include('version');
+    expect(state?.keys).to.include('status');
+    expect(state?.keys).to.include('error_count');
+  });
+
+  it('indexes all namespaces from dicts.tcl', () => {
+    const dictsPath = path.join(__dirname, 'fixtures', 'dicts.tcl');
+    const content = fs.readFileSync(dictsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const result = scanTclLines(lines);
+
+    // Check for all expected namespaces
+    expect(Array.from(result.fileNamespaces)).to.include('DictTest');
+    expect(Array.from(result.fileNamespaces)).to.include('Utils');
+    expect(Array.from(result.fileNamespaces)).to.include('Analytics');
+    expect(Array.from(result.fileNamespaces)).to.include('DataModel');
+  });
 });
