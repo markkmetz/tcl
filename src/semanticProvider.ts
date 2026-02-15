@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { TclIndexer } from './indexer';
 import { extractDictSemanticTokenSpans as extractDictSemanticTokenSpansShared } from './semanticDictTokens';
+import { extractVariableReferenceSpans } from './semanticVariables';
 
 export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvider {
   private indexer: TclIndexer;
@@ -210,7 +211,12 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
 
     // highlight dictionary keys in common dict set/create forms
     for (let line = 0; line < document.lineCount; line++) {
-      highlightDictKeysOnLine(line, document.lineAt(line).text);
+      const lineText = document.lineAt(line).text;
+      highlightDictKeysOnLine(line, lineText);
+
+      for (const span of extractVariableReferenceSpans(lineText)) {
+        builder.push(line, span.start, span.length, tokenTypeMap['variable'], 0);
+      }
     }
 
     return builder.build();
