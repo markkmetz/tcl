@@ -646,6 +646,18 @@ export class TclIndexer {
     return results;
   }
 
+  listDictionaries(): Array<{ name: string; keys: string[]; parentDict?: string }> {
+    const results: Array<{ name: string; keys: string[]; parentDict?: string }> = [];
+    for (const [name, dictInfo] of this.dictIndex.entries()) {
+      results.push({
+        name,
+        keys: Array.from(dictInfo.keys).sort(),
+        parentDict: dictInfo.parentDict
+      });
+    }
+    return results;
+  }
+
   private extractDictPairs(content: string): Array<{ key: string; value: string; isDict: boolean; dictKeys?: string[] }> {
     const pairs: Array<{ key: string; value: string; isDict: boolean; dictKeys?: string[] }> = [];
     let i = 0;

@@ -46,7 +46,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (cfg.completion !== false) {
       if (!completionDisposable) {
         const completionProvider = new TclCompletionProvider(indexer);
-        completionDisposable = vscode.languages.registerCompletionItemProvider({ language: 'tcl' }, completionProvider, '(');
+        completionDisposable = vscode.languages.registerCompletionItemProvider({ language: 'tcl' }, completionProvider, '(', ' ', '$');
         context.subscriptions.push(completionDisposable);
       }
     } else if (completionDisposable) { completionDisposable.dispose(); completionDisposable = undefined; }
