@@ -41,18 +41,44 @@
     ],
     "semanticTokenTypes": [
       {
+        "id": "dictCommand",
+        "superType": "keyword",
+        "description": "Dictionary command keyword"
+      },
+      {
+        "id": "dictSubcommand",
+        "superType": "function",
+        "description": "Dictionary subcommand keyword"
+      },
+      {
         "id": "dictKey",
         "superType": "property",
         "description": "Dictionary keys"
+      },
+      {
+        "id": "dictValue",
+        "superType": "string",
+        "description": "Dictionary values"
       }
     ],
     "semanticTokenScopes": [
       {
         "language": "tcl",
         "scopes": {
+          "dictCommand": [
+            "keyword.control.dict.tcl"
+          ],
+          "dictSubcommand": [
+            "support.function.dict-subcommand.tcl"
+          ],
           "dictKey": [
             "variable.other.dictionary-key.tcl",
             "variable.other.property.tcl"
+          ],
+          "dictValue": [
+            "string.unquoted.dictionary-value.tcl",
+            "string.quoted.dictionary-value.tcl",
+            "constant.other.dictionary-value.tcl"
           ]
         }
       }
