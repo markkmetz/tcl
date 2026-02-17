@@ -52,7 +52,7 @@ export function activate(context: vscode.ExtensionContext) {
     // completion
     if (cfg.completion !== false) {
       if (!completionDisposable) {
-        const completionProvider = new TclCompletionProvider(indexer);
+        const completionProvider = new TclCompletionProvider(indexer, cfg.snippets !== false);
         completionDisposable = vscode.languages.registerCompletionItemProvider({ language: 'tcl' }, completionProvider, '(', ' ', '$');
         context.subscriptions.push(completionDisposable);
       }
@@ -68,7 +68,7 @@ export function activate(context: vscode.ExtensionContext) {
     } else if (sigDisposable) { sigDisposable.dispose(); sigDisposable = undefined; }
 
     // semantic tokens
-    if (cfg.semanticTokens !== false) {
+    if (cfg.semanticTokens === true) {
       if (!semDisposable) {
         const legend = new vscode.SemanticTokensLegend(['variable', 'function', 'parameter', 'method', 'dictKey', 'dictValue', 'dictCommand', 'dictSubcommand'], []);
         const semProvider = new TclSemanticProvider(indexer);
@@ -78,7 +78,7 @@ export function activate(context: vscode.ExtensionContext) {
     } else if (semDisposable) { semDisposable.dispose(); semDisposable = undefined; }
 
     // lint diagnostics
-    if (cfg.lint !== false) {
+    if (cfg.lint === true) {
       if (!diagnostics) {
         diagnostics = vscode.languages.createDiagnosticCollection('tcl-lint');
         context.subscriptions.push(diagnostics);

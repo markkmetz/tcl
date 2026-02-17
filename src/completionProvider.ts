@@ -5,9 +5,11 @@ import { buildProcSnippet } from './completionUtils';
 
 export class TclCompletionProvider implements vscode.CompletionItemProvider {
   private indexer: TclIndexer;
+  private snippetsEnabled: boolean;
 
-  constructor(indexer: TclIndexer) {
+  constructor(indexer: TclIndexer, snippetsEnabled: boolean = true) {
     this.indexer = indexer;
+    this.snippetsEnabled = snippetsEnabled;
   }
 
 async provideCompletionItems(
@@ -159,18 +161,20 @@ async provideCompletionItems(
   }
 
   // first add snippet templates (proc, namespace, etc.)
-  const snippetKeys = Object.keys(SNIPPETS).filter(k => prefix === '' || k.toLowerCase().startsWith(prefixLower));
-  for (const key of snippetKeys) {
-    const meta = SNIPPETS[key];
-    const sitem = new vscode.CompletionItem(key, vscode.CompletionItemKind.Snippet);
-    sitem.detail = 'Tcl snippet';
-    const md = new vscode.MarkdownString();
-    md.appendMarkdown(`**Snippet**: ${key}\n\n`);
-    md.appendMarkdown(`${meta.description}\n\n`);
-    if (meta.params && meta.params.length) md.appendMarkdown(`**Params:** ${meta.params.join(' ')}`);
-    sitem.documentation = md;
-    sitem.insertText = new vscode.SnippetString(meta.snippet);
-    items.push(sitem);
+  if (this.snippetsEnabled) {
+    const snippetKeys = Object.keys(SNIPPETS).filter(k => prefix === '' || k.toLowerCase().startsWith(prefixLower));
+    for (const key of snippetKeys) {
+      const meta = SNIPPETS[key];
+      const sitem = new vscode.CompletionItem(key, vscode.CompletionItemKind.Snippet);
+      sitem.detail = 'Tcl snippet';
+      const md = new vscode.MarkdownString();
+      md.appendMarkdown(`**Snippet**: ${key}\n\n`);
+      md.appendMarkdown(`${meta.description}\n\n`);
+      if (meta.params && meta.params.length) md.appendMarkdown(`**Params:** ${meta.params.join(' ')}`);
+      sitem.documentation = md;
+      sitem.insertText = new vscode.SnippetString(meta.snippet);
+      items.push(sitem);
+    }
   }
 
   // add built-in commands that match the prefix (case-insensitive)

@@ -1,0 +1,12 @@
+**/*.map
+node_modules/
+test/
+src/
+.git/
+.gitignore
+.vscode/
+*.ts
+tsconfig.json
+.vscodeignore
+*.lock
+*.md

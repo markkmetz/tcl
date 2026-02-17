@@ -3,7 +3,7 @@
   "publisher": "kmetzenterprises",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "repository": {
     "type": "git",
     "url": "https://github.com/markkmetz/tcl.git"
@@ -107,14 +107,19 @@
           "default": true,
           "description": "Enable signature help when typing procedure calls."
         },
-        "tcl.features.semanticTokens": {
+        "tcl.features.snippets": {
           "type": "boolean",
           "default": true,
+          "description": "Enable code snippets for proc and namespace templates."
+        },
+        "tcl.features.semanticTokens": {
+          "type": "boolean",
+          "default": false,
           "description": "Enable semantic (type-aware) syntax highlighting."
         },
         "tcl.features.lint": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Enable lint diagnostics (duplicates, unused variables)."
         },
         "tcl.index.externalPaths": {
@@ -132,7 +137,7 @@
             "local",
             "remote"
           ],
-          "default": "local",
+          "default": "disabled",
           "enumDescriptions": [
             "Disable runtime syntax checking",
             "Use local tclsh for syntax checking",
