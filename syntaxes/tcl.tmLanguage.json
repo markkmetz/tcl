@@ -22,8 +22,8 @@
       "patterns": [
         {
           "name": "string.quoted.double.tcl",
-          "begin": "\"",
-          "end": "\"",
+          "begin": "(?<!\\\\)\"",
+          "end": "(?<!\\\\)\"",
           "patterns": [ { "match": "\\\\.", "name": "constant.character.escape.tcl" } ]
         },
         {

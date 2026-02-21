@@ -8,6 +8,9 @@ describe('TCL Grammar Highlighting', () => {
   const paramPattern = grammar.repository.definitions.patterns.find(
     (pattern: { name?: string }) => pattern.name === 'meta.definition.parameters.tcl'
   )?.match;
+  const doubleQuotePattern = grammar.repository.strings.patterns.find(
+    (pattern: { name?: string }) => pattern.name === 'string.quoted.double.tcl'
+  );
 
   it('should match method parameters with escaped brackets in defaults', () => {
     const line = 'method processData {{format "json"} {pattern "\\[\\]"} {schema "{}"}} {';
@@ -28,5 +31,24 @@ describe('TCL Grammar Highlighting', () => {
 
     expect(matches[0]).to.equal('{where "{id > 0}"}');
     expect(matches).to.have.lengthOf(3);
+  });
+
+  it('should not treat escaped quote (\\") as start of a string', () => {
+    const line = 'set value \\"$value\\"';
+    const beginRegex = new RegExp(doubleQuotePattern.begin, 'g');
+    const beginMatches = [...line.matchAll(beginRegex)];
+
+    expect(beginMatches).to.have.lengthOf(0);
+  });
+
+  it('should still detect real unescaped double-quoted strings', () => {
+    const line = 'set value "$value"';
+    const beginRegex = new RegExp(doubleQuotePattern.begin, 'g');
+    const endRegex = new RegExp(doubleQuotePattern.end, 'g');
+    const beginMatches = [...line.matchAll(beginRegex)];
+    const endMatches = [...line.matchAll(endRegex)];
+
+    expect(beginMatches.length).to.equal(2);
+    expect(endMatches.length).to.equal(2);
   });
 });

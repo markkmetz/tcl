@@ -72,3 +72,7 @@ proc gproc {m {n 5}} {
 namespace import ::ns1::*
 set gvar 1
 set gstr "{}}}[[]]{}"; # braces/brackets in string at top-level
+
+
+set value \"$value\"
+set value 1234
