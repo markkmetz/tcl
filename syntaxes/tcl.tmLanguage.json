@@ -25,12 +25,6 @@
           "begin": "(?<!\\\\)\"",
           "end": "(?<!\\\\)\"",
           "patterns": [ { "match": "\\\\.", "name": "constant.character.escape.tcl" } ]
-        },
-        {
-          "name": "string.quoted.single.tcl",
-          "begin": "'",
-          "end": "'",
-          "patterns": [ { "match": "\\\\.", "name": "constant.character.escape.tcl" } ]
         }
       ]
     },

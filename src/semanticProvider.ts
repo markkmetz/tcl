@@ -23,10 +23,21 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       dictSubcommand: 7
     };
     const seenDefs = new Set<string>();
+    const pendingTokens: Array<{ line: number; col: number; length: number; type: keyof typeof tokenTypeMap }> = [];
+
+    const queueToken = (line: number, col: number, length: number, type: keyof typeof tokenTypeMap) => {
+      if (line < 0 || line >= document.lineCount) return;
+      if (col < 0 || length <= 0) return;
+      const lineText = document.lineAt(line).text;
+      if (col >= lineText.length) return;
+      const safeLength = Math.min(length, lineText.length - col);
+      if (safeLength <= 0) return;
+      pendingTokens.push({ line, col, length: safeLength, type });
+    };
 
     const highlightDictKeysOnLine = (lineNumber: number, lineText: string) => {
       for (const span of extractDictSemanticTokenSpansShared(lineText)) {
-        builder.push(lineNumber, span.start, span.length, tokenTypeMap[span.type], 0);
+        queueToken(lineNumber, span.start, span.length, span.type);
       }
     };
 
@@ -159,7 +170,7 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       const tokenTypeIndex = s.type === 'method' ? tokenTypeMap['method'] : tokenTypeMap['function'];
       const defKey = `${line}:${defSpan.col}:${defSpan.length}`;
       if (!seenDefs.has(defKey)) {
-        builder.push(line, defSpan.col, defSpan.length, tokenTypeIndex, 0);
+        queueToken(line, defSpan.col, defSpan.length, s.type === 'method' ? 'method' : 'function');
         seenDefs.add(defKey);
       }
 
@@ -168,7 +179,7 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
         const parsed = parseParamsWithPositions(paramsText, positions, line, defSpan.col);
         for (const p of parsed) {
           if (!p.name) continue;
-          builder.push(p.position.line, p.position.char, p.name.length, tokenTypeMap['parameter'], 0);
+          queueToken(p.position.line, p.position.char, p.name.length, 'parameter');
         }
       }
     }
@@ -188,7 +199,7 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       if (seenDefs.has(defKey)) continue;
 
       const tokenTypeIndex = type === 'method' ? tokenTypeMap['method'] : tokenTypeMap['function'];
-      builder.push(line, col, name.length, tokenTypeIndex, 0);
+      queueToken(line, col, name.length, type === 'method' ? 'method' : 'function');
       seenDefs.add(defKey);
 
       const { paramsText, positions } = extractParamsBlock(line, col, name.length);
@@ -196,17 +207,19 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
         const parsed = parseParamsWithPositions(paramsText, positions, line, col);
         for (const p of parsed) {
           if (!p.name) continue;
-          builder.push(p.position.line, p.position.char, p.name.length, tokenTypeMap['parameter'], 0);
+          queueToken(p.position.line, p.position.char, p.name.length, 'parameter');
         }
       }
     }
 
-    // highlight variable declarations
+    // highlight variable declarations in this document only
+    const docKey = document.uri.toString();
     const vars = this.indexer.listVariables();
     for (const v of vars) {
+      if (v.loc.uri.toString() !== docKey) continue;
       const line = v.loc.range.start.line;
       const col = v.loc.range.start.character;
-      builder.push(line, col, v.name.length, tokenTypeMap['variable'], 0);
+      queueToken(line, col, v.name.length, 'variable');
     }
 
     // highlight dictionary keys in common dict set/create forms
@@ -215,9 +228,13 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       highlightDictKeysOnLine(line, lineText);
 
       for (const span of extractVariableReferenceSpans(lineText)) {
-        builder.push(line, span.start, span.length, tokenTypeMap['variable'], 0);
+        queueToken(line, span.start, span.length, 'variable');
       }
     }
+
+    pendingTokens
+      .sort((a, b) => (a.line - b.line) || (a.col - b.col) || (a.length - b.length))
+      .forEach(t => builder.push(t.line, t.col, t.length, tokenTypeMap[t.type], 0));
 
     return builder.build();
   }
