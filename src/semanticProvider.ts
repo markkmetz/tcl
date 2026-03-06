@@ -222,13 +222,60 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       queueToken(line, col, v.name.length, 'variable');
     }
 
-    // highlight dictionary keys in common dict set/create forms
+    // build lookup map for indexed procs/methods with type information
+    const nameToType = this.indexer.getAllProcMethodTypes();
+
+    // highlight dictionary keys, variable references, and proc/method usages
     for (let line = 0; line < document.lineCount; line++) {
       const lineText = document.lineAt(line).text;
+      const trimmed = lineText.trimStart();
+      
+      // skip comment lines
+      if (trimmed.startsWith('#')) continue;
+      
       highlightDictKeysOnLine(line, lineText);
 
       for (const span of extractVariableReferenceSpans(lineText)) {
         queueToken(line, span.start, span.length, 'variable');
+      }
+      
+      // highlight proc/method usages (calls)
+      const WORD_CHARS = /[A-Za-z0-9_:.]/;
+      let i = 0;
+      while (i < lineText.length) {
+        // skip non-word chars
+        if (!WORD_CHARS.test(lineText[i])) {
+          i += 1;
+          continue;
+        }
+        
+        const start = i;
+        while (i < lineText.length && WORD_CHARS.test(lineText[i])) i += 1;
+        const token = lineText.slice(start, i);
+        const tokenNormalized = token.replace(/^::+/, '').toLowerCase();
+        
+        // skip if this is a variable reference
+        if (start > 0 && lineText[start - 1] === '$') continue;
+        
+        // check if at command boundary
+        let cursor = start - 1;
+        while (cursor >= 0 && /\s/.test(lineText[cursor])) cursor -= 1;
+        const isCommandPosition = cursor < 0 || lineText[cursor] === '[' || lineText[cursor] === ';' || lineText[cursor] === '{';
+        
+        if (!isCommandPosition) continue;
+        
+        // skip if this is a definition line
+        const defMatch = lineText.match(/^\s*(proc|method)\s+([A-Za-z0-9_:.]+)/);
+        if (defMatch && defMatch[2]) {
+          const definedName = defMatch[2].replace(/^::+/, '').toLowerCase();
+          if (definedName === tokenNormalized) continue;
+        }
+        
+        // check if it's an indexed proc or method
+        const tokenType = nameToType.get(tokenNormalized);
+        if (tokenType) {
+          queueToken(line, start, token.length, tokenType === 'method' ? 'method' : 'function');
+        }
       }
     }
 

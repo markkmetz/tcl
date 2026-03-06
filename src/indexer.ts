@@ -503,6 +503,33 @@ export class TclIndexer {
     return results;
   }
 
+  // return all indexed procs and methods with their types (for semantic highlighting)
+  getAllProcMethodTypes(): Map<string, 'proc' | 'method'> {
+    const typeMap = new Map<string, 'proc' | 'method'>();
+    
+    // Add all procs
+    for (const [_, arr] of this.procIndex.entries()) {
+      for (const p of arr) {
+        const normalized = p.normalizedFqName.replace(/^::+/, '').toLowerCase();
+        const short = (normalized.split('::').pop() || normalized).toLowerCase();
+        typeMap.set(normalized, 'proc');
+        typeMap.set(short, 'proc');
+      }
+    }
+    
+    // Add all methods (these override procs if there's a collision)
+    for (const [_, arr] of this.methodIndex.entries()) {
+      for (const m of arr) {
+        const normalized = m.normalizedFqName.replace(/^::+/, '').toLowerCase();
+        const short = (normalized.split('::').pop() || normalized).toLowerCase();
+        typeMap.set(normalized, 'method');
+        typeMap.set(short, 'method');
+      }
+    }
+    
+    return typeMap;
+  }
+
   // list all known namespaces (normalized, excluding empty/global)
   listNamespaces(): string[] {
     const set = new Set<string>();
