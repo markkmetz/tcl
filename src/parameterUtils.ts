@@ -1,3 +1,58 @@
+function inferTypeFromDefault(defaultValue: string): string | null {
+  if (!defaultValue) return null;
+  
+  const trimmed = defaultValue.trim();
+  
+  // Empty string "" → string
+  if (trimmed === '""' || trimmed === "''") return 'string';
+  
+  // String with quotes
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || 
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return 'string';
+  }
+  
+  // Empty braces {} → dict/list
+  if (trimmed === '{}') return 'dict/list';
+  
+  // Dict create pattern
+  if (trimmed.includes('dict') && (trimmed.includes('create') || trimmed.includes('set'))) {
+    return 'dict';
+  }
+  
+  // List pattern
+  if (trimmed.startsWith('[list') || trimmed.startsWith('list')) {
+    return 'list';
+  }
+  
+  // Array pattern
+  if (trimmed.startsWith('[array')) {
+    return 'array';
+  }
+  
+  // Boolean-like values
+  if (/^(true|false|yes|no|on|off)$/i.test(trimmed)) {
+    return 'boolean';
+  }
+  
+  // Float pattern (contains decimal point)
+  if (/^-?\d+\.\d+$/.test(trimmed)) {
+    return 'float';
+  }
+  
+  // Integer pattern
+  if (/^-?\d+$/.test(trimmed)) {
+    return 'int';
+  }
+  
+  // Expression [expr ...]
+  if (trimmed.startsWith('[expr')) {
+    return 'expr';
+  }
+  
+  return null;
+}
+
 export function formatParameters(params: string[]): string {
   if (!params || params.length === 0) return '(no params)';
   
@@ -30,10 +85,19 @@ export function formatParameters(params: string[]): string {
       
       // Format as paramName=defaultValue or paramName={complex default}
       const defaultValue = defaultParts.join(' ');
-      if (defaultValue.includes(' ') || defaultValue.includes('{') || defaultValue.includes('[')) {
-        formatted.push(`${paramName}={${defaultValue}}`);
+      const inferredType = inferTypeFromDefault(defaultValue);
+      const typeHint = inferredType ? `: ${inferredType}` : '';
+      
+      // Special case: don't wrap empty braces or simple values
+      const needsWrapping = defaultValue !== '{}' && 
+                           (defaultValue.includes(' ') || 
+                            (defaultValue.includes('{') && !defaultValue.match(/^[\{\}]+$/)) || 
+                            defaultValue.includes('['));
+      
+      if (needsWrapping) {
+        formatted.push(`${paramName}${typeHint}={${defaultValue}}`);
       } else {
-        formatted.push(`${paramName}=${defaultValue}`);
+        formatted.push(`${paramName}${typeHint}=${defaultValue}`);
       }
     } else {
       // Simple parameter without default
@@ -80,12 +144,21 @@ export function formatParametersForSignature(params: string[]): { formatted: str
       
       // Format as paramName=defaultValue or paramName={complex default}
       const defaultValue = defaultParts.join(' ');
-      if (defaultValue.includes(' ') || defaultValue.includes('{') || defaultValue.includes('[')) {
-        formatted.push(`${paramName}={${defaultValue}}`);
-        paramInfos.push(`${paramName} (default: {${defaultValue}})`);
+      const inferredType = inferTypeFromDefault(defaultValue);
+      const typeHint = inferredType ? `: ${inferredType}` : '';
+      
+      // Special case: don't wrap empty braces or simple values
+      const needsWrapping = defaultValue !== '{}' && 
+                           (defaultValue.includes(' ') || 
+                            (defaultValue.includes('{') && !defaultValue.match(/^[\{\}]+$/)) || 
+                            defaultValue.includes('['));
+      
+      if (needsWrapping) {
+        formatted.push(`${paramName}${typeHint}={${defaultValue}}`);
+        paramInfos.push(`${paramName}${typeHint} (default: {${defaultValue}})`);
       } else {
-        formatted.push(`${paramName}=${defaultValue}`);
-        paramInfos.push(`${paramName} (default: ${defaultValue})`);
+        formatted.push(`${paramName}${typeHint}=${defaultValue}`);
+        paramInfos.push(`${paramName}${typeHint} (default: ${defaultValue})`);
       }
     } else {
       // Simple parameter without default
