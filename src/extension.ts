@@ -8,6 +8,8 @@ import { TclSemanticProvider } from './semanticProvider';
 import { TclFormatter } from './formatter';
 import { TclSyntaxChecker } from './syntaxChecker';
 import { TclSyntaxCodeActionProvider } from './syntaxCodeActionProvider';
+import { TclCodeLensProvider } from './codeLensProvider';
+import { TclReferenceProvider } from './referenceProvider';
 
 export function activate(context: vscode.ExtensionContext) {
   const indexer = new TclIndexer();
@@ -19,6 +21,8 @@ export function activate(context: vscode.ExtensionContext) {
   let completionDisposable: vscode.Disposable | undefined;
   let sigDisposable: vscode.Disposable | undefined;
   let semDisposable: vscode.Disposable | undefined;
+  let codeLensDisposable: vscode.Disposable | undefined;
+  let refDisposable: vscode.Disposable | undefined;
   let syntaxCodeActionDisposable: vscode.Disposable | undefined;
   let diagnostics: vscode.DiagnosticCollection | undefined;
   let syntaxDiagnostics: vscode.DiagnosticCollection | undefined;
@@ -76,6 +80,24 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(semDisposable);
       }
     } else if (semDisposable) { semDisposable.dispose(); semDisposable = undefined; }
+
+    // references
+    if (cfg.gotoDefinition !== false) {
+      if (!refDisposable) {
+        const referenceProvider = new TclReferenceProvider(indexer);
+        refDisposable = vscode.languages.registerReferenceProvider({ language: 'tcl' }, referenceProvider);
+        context.subscriptions.push(refDisposable);
+      }
+    } else if (refDisposable) { refDisposable.dispose(); refDisposable = undefined; }
+
+    // code lens usage counts
+    if (cfg.codeLens !== false) {
+      if (!codeLensDisposable) {
+        const codeLensProvider = new TclCodeLensProvider(indexer);
+        codeLensDisposable = vscode.languages.registerCodeLensProvider({ language: 'tcl' }, codeLensProvider);
+        context.subscriptions.push(codeLensDisposable);
+      }
+    } else if (codeLensDisposable) { codeLensDisposable.dispose(); codeLensDisposable = undefined; }
 
     // lint diagnostics
     if (cfg.lint === true) {

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { parseDefinitionLine } from './parser';
+import { collectProcMethodReferences } from './referenceUtils';
 
 export class TclIndexer {
   private index: Map<string, vscode.Location[]> = new Map();
@@ -656,6 +657,43 @@ export class TclIndexer {
       });
     }
     return results;
+  }
+
+  async findProcMethodReferences(name: string, document?: vscode.TextDocument): Promise<vscode.Location[]> {
+    const normalized = (name || '').replace(/^::+/, '');
+    const short = normalized.split('::').pop() || normalized;
+    const sigs = this.getProcSignatures(normalized, document);
+
+    const symbols = new Set<string>([normalized, short]);
+    for (const s of sigs) {
+      const fq = (s.fqName || '').replace(/^::+/, '');
+      if (!fq) continue;
+      symbols.add(fq);
+      symbols.add(fq.split('::').pop() || fq);
+    }
+
+    const files = await vscode.workspace.findFiles('**/*.tcl');
+    const refs: vscode.Location[] = [];
+
+    for (const file of files) {
+      try {
+        const doc = await vscode.workspace.openTextDocument(file);
+        const lines = doc.getText().split(/\r?\n/);
+        const found = collectProcMethodReferences(lines, Array.from(symbols));
+        for (const hit of found) {
+          refs.push(new vscode.Location(file, new vscode.Position(hit.line, hit.character)));
+        }
+      } catch {
+        // ignore unreadable files
+      }
+    }
+
+    const dedupe = new Map<string, vscode.Location>();
+    for (const loc of refs) {
+      const key = `${loc.uri.toString()}:${loc.range.start.line}:${loc.range.start.character}`;
+      if (!dedupe.has(key)) dedupe.set(key, loc);
+    }
+    return Array.from(dedupe.values());
   }
 
   private extractDictPairs(content: string): Array<{ key: string; value: string; isDict: boolean; dictKeys?: string[] }> {

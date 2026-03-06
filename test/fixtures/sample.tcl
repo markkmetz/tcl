@@ -76,3 +76,5 @@ set gstr "{}}}[[]]{}"; # braces/brackets in string at top-level
 
 set value \"$value\"
 set value 1234
+
+ns2::buzz 1

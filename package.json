@@ -117,6 +117,11 @@
           "default": false,
           "description": "Enable semantic (type-aware) syntax highlighting."
         },
+        "tcl.features.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show proc/method usage counts as CodeLens (used in N locations)."
+        },
         "tcl.features.lint": {
           "type": "boolean",
           "default": false,
