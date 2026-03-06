@@ -58,3 +58,21 @@ set appSettings [dict create \
 # Test completion on nested dict
 dict get appSettings user 
 dict get appSettings database 
+
+# ===== MULTIPLE KEY-VALUE PAIR TESTS =====
+# Test that completion re-prompts after each value for dict set
+# After typing "John Doe" and pressing space, should prompt for next key
+dict set mydict name "John Doe" 
+
+# After entering multiple pairs, should still suggest keys
+# BUT it should exclude "name" and "age" since they're already used
+dict set mydict name "John" age 30 
+
+# Same behavior with dict append - should re-prompt after each value
+# Should exclude "phone" and "email" from suggestions
+dict append mydict phone "+1-555-" email "john" 
+
+# And dict lappend for appending to list values - should re-prompt
+# Should exclude "tags" from second suggestion (since it's already used)
+dict lappend mydict tags "work" tags "important" 
+
