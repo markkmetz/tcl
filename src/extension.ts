@@ -74,7 +74,7 @@ export function activate(context: vscode.ExtensionContext) {
     // semantic tokens
     if (cfg.semanticTokens === true) {
       if (!semDisposable) {
-        const legend = new vscode.SemanticTokensLegend(['variable', 'function', 'parameter', 'method', 'dictKey', 'dictValue', 'dictCommand', 'dictSubcommand'], []);
+        const legend = new vscode.SemanticTokensLegend(['variable', 'function', 'parameter', 'method', 'keyword', 'namespace', 'dictKey', 'dictValue', 'dictCommand', 'dictSubcommand'], []);
         const semProvider = new TclSemanticProvider(indexer);
         semDisposable = vscode.languages.registerDocumentSemanticTokensProvider({ language: 'tcl' }, semProvider, legend);
         context.subscriptions.push(semDisposable);

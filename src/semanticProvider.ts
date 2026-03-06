@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { TclIndexer } from './indexer';
 import { extractDictSemanticTokenSpans as extractDictSemanticTokenSpansShared } from './semanticDictTokens';
 import { extractVariableReferenceSpans } from './semanticVariables';
+import { BUILTIN_NAMES } from './builtins';
 
 export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvider {
   private indexer: TclIndexer;
@@ -17,10 +18,12 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       function: 1,
       parameter: 2,
       method: 3,
-      dictKey: 4,
-      dictValue: 5,
-      dictCommand: 6,
-      dictSubcommand: 7
+      keyword: 4,
+      namespace: 5,
+      dictKey: 6,
+      dictValue: 7,
+      dictCommand: 8,
+      dictSubcommand: 9
     };
     const seenDefs = new Set<string>();
     const pendingTokens: Array<{ line: number; col: number; length: number; type: keyof typeof tokenTypeMap }> = [];
@@ -36,8 +39,33 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
     };
 
     const highlightDictKeysOnLine = (lineNumber: number, lineText: string) => {
-      for (const span of extractDictSemanticTokenSpansShared(lineText)) {
+      const dictSpans = extractDictSemanticTokenSpansShared(lineText);
+      for (const span of dictSpans) {
         queueToken(lineNumber, span.start, span.length, span.type);
+      }
+
+      // Highlight dict variable names in direct and inline forms:
+      //   dict set mydict key value
+      //   set x [dict set mydict key value]
+      const dictSetVarPattern = /(dict\s+set\s+)([A-Za-z_][A-Za-z0-9_:.]*)/g;
+      let dictSetMatch: RegExpExecArray | null;
+      while ((dictSetMatch = dictSetVarPattern.exec(lineText)) !== null) {
+        const dictName = dictSetMatch[2];
+        const dictNameCol = dictSetMatch.index + dictSetMatch[1].length;
+        const dictNameEnd = dictNameCol + dictName.length;
+
+        // Don't add if this exact range is already used by a dict semantic span.
+        const conflictsWithDictSpan = dictSpans.some(span => {
+          const spanStart = span.start;
+          const spanEnd = span.start + span.length;
+          return dictNameCol < spanEnd && dictNameEnd > spanStart;
+        });
+        if (conflictsWithDictSpan) continue;
+
+        if (lineNumber <= 15) {
+          console.log(`[DICT-VAR] Line ${lineNumber}: queueToken(${lineNumber}, ${dictNameCol}, ${dictName.length}, 'namespace') for "${dictName}"`);
+        }
+        queueToken(lineNumber, dictNameCol, dictName.length, 'namespace');
       }
     };
 
@@ -51,9 +79,12 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
     const findDefinitionNameSpan = (lineText: string, fallbackCol: number, fallbackName: string) => {
       const defMatch = lineText.match(/^\s*(proc|method)\s+([A-Za-z0-9_:.]+)/);
       if (defMatch && defMatch[2]) {
-        const name = defMatch[2];
-        const col = lineText.indexOf(name, defMatch.index ?? 0);
-        return { col: col >= 0 ? col : fallbackCol, name, length: name.length };
+        const fullName = defMatch[2];
+        // Extract just the simple name without namespace qualifiers
+        const simpleName = fullName.split('::').filter(Boolean).pop() || fullName;
+        // Find the simple name within the full matched name
+        const col = lineText.indexOf(simpleName, (defMatch.index ?? 0) + defMatch[0].indexOf(fullName));
+        return { col: col >= 0 ? col : fallbackCol, name: simpleName, length: simpleName.length };
       }
       const span = getNameSpan(lineText, fallbackCol, fallbackName);
       return { col: fallbackCol, name: span.name, length: span.length };
@@ -165,20 +196,25 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
 
       // find definition name span (handles leading :: in names)
       const fallbackCol = s.loc.range.start.character;
+      if (line <= 15) console.log(`[SEMANTIC] Line ${line}: "${lineText}" | fallbackCol=${fallbackCol}`);
       const defSpan = findDefinitionNameSpan(lineText, fallbackCol, s.fqName);
+      if (line <= 15) console.log(`[SEMANTIC] defSpan: col=${defSpan.col}, length=${defSpan.length}, text="${lineText.substring(defSpan.col, defSpan.col + defSpan.length)}"`);
 
       const tokenTypeIndex = s.type === 'method' ? tokenTypeMap['method'] : tokenTypeMap['function'];
       const defKey = `${line}:${defSpan.col}:${defSpan.length}`;
       if (!seenDefs.has(defKey)) {
+        console.log(`[QUEUE] Line ${line}: queueToken(${line}, ${defSpan.col}, ${defSpan.length}, '${s.type === 'method' ? 'method' : 'function'}') for "${lineText.substring(defSpan.col, defSpan.col + defSpan.length)}"`);
         queueToken(line, defSpan.col, defSpan.length, s.type === 'method' ? 'method' : 'function');
         seenDefs.add(defKey);
       }
 
+      // Highlight parameters
       const { paramsText, positions } = extractParamsBlock(line, defSpan.col, defSpan.length);
       if (paramsText && positions.length) {
         const parsed = parseParamsWithPositions(paramsText, positions, line, defSpan.col);
         for (const p of parsed) {
           if (!p.name) continue;
+          if (line <= 15) console.log(`[PARAM] Line ${line}: queueToken(${p.position.line}, ${p.position.char}, ${p.name.length}, 'parameter') for "${p.name}"`);
           queueToken(p.position.line, p.position.char, p.name.length, 'parameter');
         }
       }
@@ -191,22 +227,28 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       if (!defMatch) continue;
 
       const type = defMatch[1] === 'method' ? 'method' : 'proc';
-      const name = defMatch[2];
-      const col = lineText.indexOf(name, defMatch.index ?? 0);
+      const fullName = defMatch[2];
+      // Extract just the simple name without namespace qualifiers
+      const simpleName = fullName.split('::').filter(Boolean).pop() || fullName;
+      // Find the simple name within the full matched name
+      const col = lineText.indexOf(simpleName, (defMatch.index ?? 0) + defMatch[0].indexOf(fullName));
       if (col < 0) continue;
 
-      const defKey = `${line}:${col}:${name.length}`;
+      const defKey = `${line}:${col}:${simpleName.length}`;
       if (seenDefs.has(defKey)) continue;
 
       const tokenTypeIndex = type === 'method' ? tokenTypeMap['method'] : tokenTypeMap['function'];
-      queueToken(line, col, name.length, type === 'method' ? 'method' : 'function');
+      if (line <= 15) console.log(`[FALLBACK] Line ${line}: queueToken(${line}, ${col}, ${simpleName.length}, '${type === 'method' ? 'method' : 'function'}') for "${simpleName}"`);
+      queueToken(line, col, simpleName.length, type === 'method' ? 'method' : 'function');
       seenDefs.add(defKey);
 
-      const { paramsText, positions } = extractParamsBlock(line, col, name.length);
+      // Highlight parameters
+      const { paramsText, positions } = extractParamsBlock(line, col, simpleName.length);
       if (paramsText && positions.length) {
         const parsed = parseParamsWithPositions(paramsText, positions, line, col);
         for (const p of parsed) {
           if (!p.name) continue;
+          if (line <= 15) console.log(`[FALLBACK-PARAM] Line ${line}: queueToken(${p.position.line}, ${p.position.char}, ${p.name.length}, 'parameter') for "${p.name}"`);
           queueToken(p.position.line, p.position.char, p.name.length, 'parameter');
         }
       }
@@ -224,6 +266,13 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
 
     // build lookup map for indexed procs/methods with type information
     const nameToType = this.indexer.getAllProcMethodTypes();
+    
+    // Build set of builtin commands to avoid interfering with TextMate grammar
+    const builtinSet = new Set(BUILTIN_NAMES.map(n => n.toLowerCase()));
+    
+    // Define control flow keywords for special highlighting
+    const controlFlowKeywords = new Set(['if', 'else', 'elseif', 'while', 'for', 'foreach', 'switch', 'break', 'continue', 'return', 'catch', 'try', 'throw']);
+    const namespaceKeywords = new Set(['namespace', 'package', 'source', 'load', 'import']);
 
     // highlight dictionary keys, variable references, and proc/method usages
     for (let line = 0; line < document.lineCount; line++) {
@@ -232,6 +281,9 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       
       // skip comment lines
       if (trimmed.startsWith('#')) continue;
+      
+      // skip proc/method definition lines entirely to avoid false highlights
+      if (/^\s*(proc|method)\s+[A-Za-z0-9_:.]+/.test(lineText)) continue;
       
       highlightDictKeysOnLine(line, lineText);
 
@@ -264,11 +316,22 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
         
         if (!isCommandPosition) continue;
         
-        // skip if this is a definition line
-        const defMatch = lineText.match(/^\s*(proc|method)\s+([A-Za-z0-9_:.]+)/);
-        if (defMatch && defMatch[2]) {
-          const definedName = defMatch[2].replace(/^::+/, '').toLowerCase();
-          if (definedName === tokenNormalized) continue;
+        // Highlight control flow keywords
+        if (controlFlowKeywords.has(tokenNormalized)) {
+          queueToken(line, start, token.length, 'keyword');
+          continue;
+        }
+        
+        // Highlight namespace-related keywords
+        if (namespaceKeywords.has(tokenNormalized)) {
+          queueToken(line, start, token.length, 'namespace');
+          continue;
+        }
+        
+        // Highlight other Tcl builtins as 'method' tokens
+        if (builtinSet.has(tokenNormalized)) {
+          queueToken(line, start, token.length, 'method');
+          continue;
         }
         
         // check if it's an indexed proc or method
@@ -279,9 +342,41 @@ export class TclSemanticProvider implements vscode.DocumentSemanticTokensProvide
       }
     }
 
-    pendingTokens
-      .sort((a, b) => (a.line - b.line) || (a.col - b.col) || (a.length - b.length))
-      .forEach(t => builder.push(t.line, t.col, t.length, tokenTypeMap[t.type], 0));
+    // Remove overlapping tokens - keep first token at each position, skip any that overlap
+    pendingTokens.sort((a, b) => {
+      if (a.line !== b.line) return a.line - b.line;
+      if (a.col !== b.col) return a.col - b.col;
+      return b.length - a.length; // prefer longer tokens
+    });
+
+    const finalTokens: typeof pendingTokens = [];
+    for (let i = 0; i < pendingTokens.length; i++) {
+      const token = pendingTokens[i];
+      const tokenEnd = token.col + token.length;
+      
+      // Check if this token overlaps with the most recently added token on the same line
+      let overlaps = false;
+      for (let j = finalTokens.length - 1; j >= 0; j--) {
+        const prev = finalTokens[j];
+        if (prev.line !== token.line) break; // different line, no more overlap possible
+        
+        const prevEnd = prev.col + prev.length;
+        // Check for overlap: token starts before prev ends
+        if (token.col < prevEnd) {
+          overlaps = true;
+          break;
+        }
+      }
+      
+      if (!overlaps) {
+        finalTokens.push(token);
+        if (token.line <= 15) console.log(`[FINAL] Line ${token.line}: KEPT token at col=${token.col}, length=${token.length}, type=${token.type}`);
+      } else {
+        if (token.line <= 15) console.log(`[FINAL] Line ${token.line}: DROPPED overlapping token at col=${token.col}, length=${token.length}, type=${token.type}`);
+      }
+    }
+
+    finalTokens.forEach(t => builder.push(t.line, t.col, t.length, tokenTypeMap[t.type], 0));
 
     return builder.build();
   }

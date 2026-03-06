@@ -6,8 +6,8 @@
     { "include": "#strings" },
     { "include": "#numbers" },
     { "include": "#variables" },
-    { "include": "#keywords" },
-    { "include": "#definitions" }
+    { "include": "#definitions" },
+    { "include": "#keywords" }
   ],
   "repository": {
     "comments": {
@@ -50,10 +50,10 @@
       "patterns": [
         {
           "name": "meta.definition.function.tcl",
-          "match": "^\\s*(?:proc|method)\\s+([A-Za-z0-9_:.]+)",
+          "match": "^\\s*(proc|method)\\s+([A-Za-z0-9_:.]+)",
           "captures": {
-            "0": { "name": "meta.definition.function.tcl" },
-            "1": { "name": "entity.name.function.tcl" }
+            "1": { "name": "storage.type.function.tcl" },
+            "2": { "name": "entity.name.function.tcl" }
           }
         },
         {

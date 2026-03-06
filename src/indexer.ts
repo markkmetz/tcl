@@ -164,7 +164,9 @@ export class TclIndexer {
 
         const normalizedFqName = defNamespace ? `${defNamespace}::${simpleName}` : simpleName;
         const fqName = hasLeading ? `::${normalizedFqName}` : normalizedFqName;
-        const pos = new vscode.Position(i, line.indexOf(simpleName));
+        // Use the original name from the line to get correct column position
+        const nameToFind = name.replace(/^::+/, '');
+        const pos = new vscode.Position(i, line.indexOf(nameToFind));
         const loc = new vscode.Location(uri, pos);
 
         // general index for hover (use simple name and fqName)
