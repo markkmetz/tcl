@@ -322,3 +322,5 @@ proc applyDefaults {userDict {defaults [dict create role user status active veri
   }
   return $userDict
 }
+
+puts $variablehere

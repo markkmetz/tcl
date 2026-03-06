@@ -24,7 +24,7 @@ async provideHover(
   if (name.startsWith('$')) name = name.slice(1);
 
   // check for variable entries first
-  const varEntries = await this.indexer.lookupVariable(name);
+  const varEntries = await this.indexer.lookupVariable(name, document, position);
 
   const lines: string[] = [];
 

@@ -1,0 +1,1 @@
+set globalvar "value1"

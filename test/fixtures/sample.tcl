@@ -1,5 +1,8 @@
 # Sample TCL for unit tests
+
+
 namespace eval ::ns1 {
+  set variablehere "asdf"
   proc foo {a {b 1}} {
     set asdf "{}/!@#$%}"
     set calc [expr {($a + $b) * ([string length "[[]]"] + 1)}]
@@ -23,7 +26,9 @@ namespace eval ::ns1 {
     set total [expr {([expr {$p + $q}]) + ([expr {$r}])}]
     return [list $p $q $r]
   }
+  puts $variablehere
 }
+puts $variablehere
 
 namespace eval ns2 {
   method baz {p} {

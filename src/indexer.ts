@@ -4,7 +4,7 @@ import { collectProcMethodReferences } from './referenceUtils';
 
 export class TclIndexer {
   private index: Map<string, vscode.Location[]> = new Map();
-  private variableIndex: Map<string, { loc: vscode.Location; value: string }[]> = new Map();
+  private variableIndex: Map<string, { loc: vscode.Location; value: string; namespace?: string }[]> = new Map();
   private procIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
   private methodIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
   private dictIndex: Map<string, { keys: Set<string>; line: number; parentDict?: string }> = new Map();
@@ -204,10 +204,13 @@ export class TclIndexer {
         const vpos = new vscode.Position(i, line.indexOf(vname));
         const vloc = new vscode.Location(uri, vpos);
 
+        // Track which namespace this variable belongs to
+        const varNamespace = namespaceStack.length ? namespaceStack[namespaceStack.length - 1] : undefined;
+
         const varArr = this.variableIndex.get(vname) || [];
         const existsVar = varArr.findIndex(v => v.loc.uri.toString() === uri.toString() && v.loc.range.start.line === i);
         if (existsVar === -1) {
-          varArr.push({ loc: vloc, value: rawValue });
+          varArr.push({ loc: vloc, value: rawValue, namespace: varNamespace });
           this.variableIndex.set(vname, varArr);
         }
 
@@ -420,8 +423,53 @@ export class TclIndexer {
     return this.lookupInContext(name, undefined);
   }
 
+  // Helper: determine which namespace a cursor position is in (by scanning document for namespace blocks)
+  private getNamespaceAtCursorPosition(document: vscode.TextDocument, position: vscode.Position): string | undefined {
+    const text = document.getText();
+    const lines = text.split(/\r?\n/);
+    const targetLine = position.line;
+
+    const namespaceStack: string[] = [];
+    const namespaceDepths: number[] = [];
+    let braceDepth = 0;
+
+    for (let i = 0; i < Math.min(targetLine + 1, lines.length); i++) {
+      const line = lines[i];
+
+      // Track namespace eval declarations
+      const nsMatch = line.match(/^\s*namespace\s+eval\s+([A-Za-z0-9_:]+)\s*\{/);
+      if (nsMatch) {
+        const ns = nsMatch[1].replace(/^::+/, '');
+        namespaceStack.push(ns);
+        namespaceDepths.push(braceDepth + 1);
+      }
+
+      // Count braces
+      let inString = false;
+      for (let c = 0; c < line.length; c++) {
+        const ch = line[c];
+        const prev = c > 0 ? line[c - 1] : '';
+        if (ch === '"' && prev !== '\\') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+        if (ch === '{') braceDepth++;
+        else if (ch === '}') braceDepth--;
+      }
+
+      // Pop namespaces when their closing brace is found
+      while (namespaceDepths.length > 0 && braceDepth < namespaceDepths[namespaceDepths.length - 1]) {
+        namespaceStack.pop();
+        namespaceDepths.pop();
+      }
+    }
+
+    return namespaceStack.length ? namespaceStack[namespaceStack.length - 1] : undefined;
+  }
+
   // lookup with optional document context (to respect imports/namespaces)
-  async lookupInContext(name: string, document?: vscode.TextDocument): Promise<vscode.Location[]> {
+  async lookupInContext(name: string, document?: vscode.TextDocument, position?: vscode.Position): Promise<vscode.Location[]> {
     // normalize and if fq name provided
     const normalized = name.replace(/^::+/, '');
     if (normalized.includes('::')) {
@@ -429,7 +477,7 @@ export class TclIndexer {
     }
 
     const simple = normalized.split('::').pop() || normalized;
-    const entries: vscode.Location[] = [];
+    const entries: { loc: vscode.Location; namespace?: string | null | undefined }[] = [];
 
     // gather matching proc/method entries and filter by context
     const parr = this.procIndex.get(simple) || [];
@@ -447,23 +495,81 @@ export class TclIndexer {
       return false;
     };
 
-    for (const p of parr) if (includeEntry(p)) entries.push(p.loc);
-    for (const m of marr) if (includeEntry(m)) entries.push(m.loc);
+    for (const p of parr) if (includeEntry(p)) entries.push({ ...p });
+    for (const m of marr) if (includeEntry(m)) entries.push({ ...m });
+
+    // When we have position context (Go To Definition), prioritize by namespace
+    if (position && document && entries.length > 1) {
+      const currentNamespace = this.getNamespaceAtCursorPosition(document, position);
+      if (currentNamespace) {
+        // Sort: current namespace first, then global, then others
+        entries.sort((a, b) => {
+          const aIsCurrentNs = a.namespace === currentNamespace ? 0 : 1;
+          const bIsCurrentNs = b.namespace === currentNamespace ? 0 : 1;
+          const aIsGlobal = !a.namespace ? 0 : 2;
+          const bIsGlobal = !b.namespace ? 0 : 2;
+          return (aIsCurrentNs + aIsGlobal) - (bIsCurrentNs + bIsGlobal);
+        });
+        // Return only the top match
+        return [entries[0].loc];
+      }
+    }
+
+    const results = entries.map(e => e.loc);
 
     // fallback to general index entries (simple name or fq)
-    if (!entries.length) {
+    if (!results.length) {
       const exact = this.index.get(simple) || [];
-      entries.push(...exact);
+      results.push(...exact);
+    }
+
+    return results;
+  }
+
+  async lookupVariable(name: string, document?: vscode.TextDocument, position?: vscode.Position): Promise<{ loc: vscode.Location; value: string }[]> {
+    const normalized = name.replace(/^::+/, '');
+    const simple = normalized.split('::').pop() || normalized;
+    
+    const allEntries = this.variableIndex.get(simple) || [];
+    if (!allEntries.length) return [];
+
+    // Variables are file-scoped by default
+    // Only include variables from:
+    // 1. The same file, OR
+    // 2. The same namespace (if in a namespace)
+    const currentFile = document?.uri.toString();
+    const currentNamespace = position && document ? this.getNamespaceAtCursorPosition(document, position) : undefined;
+
+    const entries = allEntries.filter(entry => {
+      const entryFile = entry.loc.uri.toString();
+      
+      // Same file - always include
+      if (entryFile === currentFile) return true;
+      
+      // Different file - only include if same namespace
+      if (currentNamespace && entry.namespace === currentNamespace) return true;
+      
+      // Don't include global variables from other files
+      return false;
+    });
+
+    if (!entries.length) return [];
+
+    // When we have position context, prioritize by namespace within the filtered results
+    if (position && document && entries.length > 1 && currentNamespace) {
+      // Sort: current namespace first, then global
+      const sorted = [...entries].sort((a, b) => {
+        const aIsCurrentNs = a.namespace === currentNamespace ? 0 : 1;
+        const bIsCurrentNs = b.namespace === currentNamespace ? 0 : 1;
+        const aIsGlobal = !a.namespace ? 0 : 2;
+        const bIsGlobal = !b.namespace ? 0 : 2;
+        return (aIsCurrentNs + aIsGlobal) - (bIsCurrentNs + bIsGlobal);
+      });
+      // Return only the top match
+      return [sorted[0]];
     }
 
     return entries;
-  }
-
-  async lookupVariable(name: string): Promise<{ loc: vscode.Location; value: string }[]> {
-    const exact = this.variableIndex.get(name) || [];
-    if (exact.length) return exact;
-    const simple = name.split('::').pop() || name;
-    return this.variableIndex.get(simple) || [];
   }
 
   // return list of indexed procs available in given document (respect namespaces/imports)
