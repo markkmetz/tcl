@@ -262,11 +262,12 @@ async provideCompletionItems(
           items.push(keyItem);
         }
       }
-      
-      // Return early to prevent showing unrelated completions (procs, builtins, etc.)
-      // Even if we didn't find keys, we matched a dict command at a key position
-      return items;
     }
+    
+    // Return early whether we're showing key completions or not
+    // If shouldComplete is false, we're at a value position and shouldn't show any completions
+    // This prevents showing unrelated proc/builtin completions in dict command context
+    return items;
   }
 
   // namespace-specific completion: user typed Namespace::partial or ::Namespace::partial
