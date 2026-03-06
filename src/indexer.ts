@@ -8,6 +8,7 @@ export class TclIndexer {
   private procIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
   private methodIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
   private dictIndex: Map<string, { keys: Set<string>; line: number; parentDict?: string }> = new Map();
+  private namespaceIndex: Map<string, vscode.Location[]> = new Map();
   private watcher?: vscode.FileSystemWatcher;
   private externalPaths: string[] = [];
   private externalWatchers: vscode.FileSystemWatcher[] = [];
@@ -104,6 +105,12 @@ export class TclIndexer {
         namespaceStack.push(n);
         fileNamespaces.add(n);
         namespaceDepths.push(braceDepth + 1); // the depth after the opening brace
+        
+        // Store namespace location for go-to-definition
+        const nsLoc = new vscode.Location(uri, new vscode.Range(i, 0, i, line.length));
+        const existing = this.namespaceIndex.get(n) || [];
+        existing.push(nsLoc);
+        this.namespaceIndex.set(n, existing);
       }
 
       // count braces on this line to track depth (ignore braces inside strings)
@@ -298,6 +305,13 @@ export class TclIndexer {
       if (filtered.length !== arr.length) {
         if (filtered.length) this.methodIndex.set(k, filtered);
         else this.methodIndex.delete(k);
+      }
+    }
+    for (const [k, arr] of this.namespaceIndex.entries()) {
+      const filtered = arr.filter(l => l.uri.toString() !== uri.toString());
+      if (filtered.length !== arr.length) {
+        if (filtered.length) this.namespaceIndex.set(k, filtered);
+        else this.namespaceIndex.delete(k);
       }
     }
     // Clear dicts from removed file (simplified: clear all since we track by var name only)
@@ -524,6 +538,11 @@ export class TclIndexer {
     }
 
     return results;
+  }
+
+  lookupNamespace(name: string): vscode.Location[] {
+    const normalized = name.replace(/^::+/, '');
+    return this.namespaceIndex.get(normalized) || [];
   }
 
   async lookupVariable(name: string, document?: vscode.TextDocument, position?: vscode.Position): Promise<{ loc: vscode.Location; value: string }[]> {

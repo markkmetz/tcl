@@ -20,6 +20,48 @@ async provideHover(
 
   let name = document.getText(wordRange);
 
+  // Check for namespace reference first (e.g., "namespace eval ::ns1")
+  const line = document.lineAt(position.line).text;
+  const linePrefix = line.substring(0, position.character);
+  const namespaceEvalMatch = linePrefix.match(/namespace\s+eval\s+::?([A-Za-z0-9_:]+)$/);
+  if (namespaceEvalMatch) {
+    const nsName = namespaceEvalMatch[1];
+    const nsLocations = this.indexer.lookupNamespace(nsName);
+    if (nsLocations.length) {
+      const lines: string[] = [];
+      lines.push(`**Namespace**: \`${nsName}\``);
+      for (const loc of nsLocations) {
+        const relPath = vscode.workspace.asRelativePath(loc.uri);
+        const lineNum = loc.range.start.line + 1;
+        lines.push(`Defined in ${relPath}:${lineNum}`);
+      }
+      return new vscode.Hover(lines.join('\n\n'), wordRange);
+    }
+  }
+
+  // Check if cursor is on namespace part of qualified name (e.g., "ns1" in "ns1::foo")
+  if (name.includes('::') && !name.startsWith('$')) {
+    const parts = name.split('::').filter(Boolean);
+    if (parts.length > 1) {
+      const nsName = parts.slice(0, -1).join('::');
+      const colonIndex = name.lastIndexOf('::');
+      const relativePos = position.character - wordRange.start.character;
+      if (relativePos < colonIndex) {
+        const nsLocations = this.indexer.lookupNamespace(nsName);
+        if (nsLocations.length) {
+          const lines: string[] = [];
+          lines.push(`**Namespace**: \`${nsName}\``);
+          for (const loc of nsLocations) {
+            const relPath = vscode.workspace.asRelativePath(loc.uri);
+            const lineNum = loc.range.start.line + 1;
+            lines.push(`Defined in ${relPath}:${lineNum}`);
+          }
+          return new vscode.Hover(lines.join('\n\n'), wordRange);
+        }
+      }
+    }
+  }
+
   // strip leading $ if present (variable reference)
   if (name.startsWith('$')) name = name.slice(1);
 
