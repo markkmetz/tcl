@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { TclIndexer } from './indexer';
+import { formatParametersForSignature } from './parameterUtils';
 
 export class TclSignatureProvider implements vscode.SignatureHelpProvider {
   private indexer: TclIndexer;
@@ -27,8 +28,9 @@ export class TclSignatureProvider implements vscode.SignatureHelpProvider {
     signatureHelp.activeParameter = 0;
 
     for (const s of sigs) {
-      const params = s.params.map(p => new vscode.ParameterInformation(p));
-      const sigInfo = new vscode.SignatureInformation(`${name}(${s.params.join(', ')})`);
+      const { formatted, paramInfos } = formatParametersForSignature(s.params);
+      const params = paramInfos.map(p => new vscode.ParameterInformation(p));
+      const sigInfo = new vscode.SignatureInformation(`${name}(${formatted})`);
       sigInfo.parameters = params;
       signatureHelp.signatures.push(sigInfo);
     }

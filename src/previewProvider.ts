@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { TclIndexer } from './indexer';
 import { BUILTINS } from './builtins';
+import { formatParameters } from './parameterUtils';
 
 export class TclPreviewProvider implements vscode.HoverProvider {
   private indexer: TclIndexer;
@@ -125,8 +126,9 @@ async provideHover(
           for (const sig of procSigs) {
             const relPath = vscode.workspace.asRelativePath(sig.loc.uri);
             const lineNum = sig.loc.range.start.line + 1;
-            const params = sig.params.length ? sig.params.join(' ') : '(no params)';
-            lines.push(`- Params: ${params} — Defined in ${relPath}:${lineNum}`);
+            const params = formatParameters(sig.params);
+            lines.push(`- **Parameters**: \`${params}\``);
+            lines.push(`  **Defined in**: ${relPath}:${lineNum}`);
           }
         } else {
           // check for built-in commands
@@ -134,7 +136,10 @@ async provideHover(
           if (builtin) {
             lines.push(`**Builtin**: \`${name}\``);
             lines.push(builtin.description);
-            if (builtin.params && builtin.params.length) lines.push(`**Params:** ${builtin.params.join(' ')}`);
+            if (builtin.params && builtin.params.length) {
+              const formattedBuiltinParams = formatParameters(builtin.params);
+              lines.push(`**Parameters**: \`${formattedBuiltinParams}\``);
+            }
           } else {
             return null;
           }
