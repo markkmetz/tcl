@@ -39,6 +39,7 @@ dict set config paths logs "/var/log/app"
 # More dictionary examples
 set settings [dict create theme dark language en timezone UTC]
 set cache [dict create expires 3600 ttl 1800]
+dict lappend cache 
 
 # Update cache dict
 dict set cache maxsize 1000

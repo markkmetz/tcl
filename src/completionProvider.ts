@@ -64,6 +64,41 @@ async provideCompletionItems(
     }
   }
 
+  // Check if we're completing dict variable name after other dict commands
+  // Pattern: dict <command> <cursor> or dict <command> $<partial>
+  // Commands: set, lappend, incr, unset, append, exists, update
+  const dictCommandVarMatch = textBeforeCursor.match(/dict\s+(set|lappend|incr|unset|append|exists|update|remove|replace)\s+\$?(\w*)$/);
+  
+  if (dictCommandVarMatch && !textBeforeCursor.match(/dict\s+(set|lappend|incr|unset|append|exists|update|remove|replace)\s+\$?\w+\s+\w/)) {
+    const partial = dictCommandVarMatch[2] || '';
+    const dicts = this.indexer.listDictionaries();
+    
+    for (const dict of dicts) {
+      // Skip nested dicts (they have parentDict)
+      if (dict.parentDict) continue;
+      
+      if (partial && !dict.name.toLowerCase().startsWith(partial.toLowerCase())) continue;
+      
+      const dictItem = new vscode.CompletionItem(`$${dict.name}`, vscode.CompletionItemKind.Variable);
+      dictItem.detail = `Dictionary with keys: ${dict.keys.join(', ')}`;
+      dictItem.insertText = dict.name;
+      dictItem.sortText = `0_${dict.name}`; // Sort dicts first
+      
+      // Add documentation showing all keys
+      const md = new vscode.MarkdownString();
+      md.appendMarkdown(`**Dictionary**: \`$${dict.name}\`\n\n`);
+      md.appendMarkdown(`**Keys**: ${dict.keys.map(k => `\`${k}\``).join(', ')}\n`);
+      dictItem.documentation = md;
+      
+      items.push(dictItem);
+    }
+    
+    // If we found dicts, return them
+    if (items.length > 0) {
+      return items;
+    }
+  }
+
   // Check if we're completing dict get keys
   // Pattern: dict get $varName <cursor> or dict get $varName key1 <cursor>
   const dictGetMatch = textBeforeCursor.match(/dict\s+get\s+\$(\w+)(?:\s+(\w+))*\s*$/);
@@ -109,6 +144,57 @@ async provideCompletionItems(
       }
       
       // If we found dict keys, return early to avoid showing other completions
+      if (items.length > 0) {
+        return items;
+      }
+    }
+  }
+
+  // Check for other dict commands that need key suggestions
+  // Pattern: dict <command> $varName <cursor> or dict <command> $varName partial<cursor>
+  // Commands: set, lappend, incr, unset, append, exists, update
+  const dictCommandMatch = textBeforeCursor.match(/dict\s+(set|lappend|incr|unset|append|exists|update|remove|replace)\s+\$(\w+)\s+([\w]*)$/);
+  
+  if (dictCommandMatch) {
+    const dictCommand = dictCommandMatch[1];
+    const varName = dictCommandMatch[2];
+    const partialKey = dictCommandMatch[3] || '';
+    const dictKeys = this.indexer.getDictKeys(varName);
+    
+    if (dictKeys.length > 0) {
+      for (const key of dictKeys) {
+        // Filter by partial key if provided
+        if (partialKey && !key.toLowerCase().startsWith(partialKey.toLowerCase())) continue;
+        
+        const keyItem = new vscode.CompletionItem(key, vscode.CompletionItemKind.Property);
+        keyItem.detail = `Key in dictionary $${varName}`;
+        
+        // Provide command-specific snippet
+        switch (dictCommand) {
+          case 'set':
+            keyItem.insertText = new vscode.SnippetString(`${key} \${1:value}`);
+            keyItem.detail += ' — dict set';
+            break;
+          case 'lappend':
+            keyItem.insertText = new vscode.SnippetString(`${key} \${1:value}`);
+            keyItem.detail += ' — dict lappend';
+            break;
+          case 'incr':
+            keyItem.insertText = new vscode.SnippetString(`${key} \${1:?increment?}`);
+            keyItem.detail += ' — dict incr';
+            break;
+          case 'append':
+            keyItem.insertText = new vscode.SnippetString(`${key} \${1:value}`);
+            keyItem.detail += ' — dict append';
+            break;
+          default:
+            keyItem.insertText = key;
+        }
+        
+        keyItem.sortText = `0_${key}`; // Sort dict keys first
+        items.push(keyItem);
+      }
+      
       if (items.length > 0) {
         return items;
       }
