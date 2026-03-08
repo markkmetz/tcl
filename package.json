@@ -3,7 +3,7 @@
   "publisher": "kmetzenterprises",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "1.2.0",
+  "version": "1.4.3",
   "repository": {
     "type": "git",
     "url": "https://github.com/markkmetz/tcl.git"
@@ -122,11 +122,7 @@
           "default": true,
           "description": "Show proc/method usage counts as CodeLens (used in N locations)."
         },
-        "tcl.features.lint": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable lint diagnostics (duplicates, unused variables)."
-        },
+
         "tcl.index.externalPaths": {
           "type": "array",
           "items": {
@@ -183,6 +179,10 @@
       {
         "command": "tcl.formatDocument",
         "title": "Format Tcl Document"
+      },
+      {
+        "command": "tcl.showIndexerLog",
+        "title": "Tcl: Show Indexer Log"
       }
     ],
     "menus": {

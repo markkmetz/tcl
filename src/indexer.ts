@@ -2,26 +2,57 @@ import * as vscode from 'vscode';
 import { parseDefinitionLine } from './parser';
 import { collectProcMethodReferences } from './referenceUtils';
 
+export interface TclIndexerStatus {
+  state: 'idle' | 'indexing' | 'error';
+  message: string;
+  filesTotal?: number;
+  filesProcessed?: number;
+  durationMs?: number;
+}
+
 export class TclIndexer {
   private index: Map<string, vscode.Location[]> = new Map();
-  private variableIndex: Map<string, { loc: vscode.Location; value: string; namespace?: string }[]> = new Map();
+  private variableIndex: Map<string, { loc: vscode.Location; value: string }[]> = new Map();
   private procIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
   private methodIndex: Map<string, { loc: vscode.Location; params: string[]; fqName: string; normalizedFqName: string; namespace?: string }[]> = new Map();
   private dictIndex: Map<string, { keys: Set<string>; line: number; parentDict?: string }> = new Map();
-  private namespaceIndex: Map<string, vscode.Location[]> = new Map();
   private watcher?: vscode.FileSystemWatcher;
   private externalPaths: string[] = [];
   private externalWatchers: vscode.FileSystemWatcher[] = [];
   private fileImports: Map<string, { fileNamespaces: Set<string>; importedNamespaces: Set<string>; importedProcs: Set<string> }> = new Map();
   private _onDidIndex = new vscode.EventEmitter<void>();
+  private _onDidStatus = new vscode.EventEmitter<TclIndexerStatus>();
+  private _onDidLog = new vscode.EventEmitter<string>();
   public readonly onDidIndex = this._onDidIndex.event;
+  public readonly onDidStatus = this._onDidStatus.event;
+  public readonly onDidLog = this._onDidLog.event;
+
+  private log(message: string) {
+    const ts = new Date().toISOString();
+    this._onDidLog.fire(`[${ts}] ${message}`);
+  }
+
+  private setStatus(status: TclIndexerStatus) {
+    this._onDidStatus.fire(status);
+  }
 
   activate(context: vscode.ExtensionContext) {
+    this.log('Indexer activated');
     this.buildIndex();
     this.watcher = vscode.workspace.createFileSystemWatcher('**/*.tcl');
-    this.watcher.onDidCreate(uri => this.indexFile(uri));
-    this.watcher.onDidChange(uri => this.indexFile(uri));
-    this.watcher.onDidDelete(uri => this.removeFile(uri));
+    this.watcher.onDidCreate(uri => {
+      this.log(`File created: ${uri.fsPath}`);
+      this.indexFile(uri, 'watch:create');
+    });
+    this.watcher.onDidChange(uri => {
+      this.log(`File changed: ${uri.fsPath}`);
+      this.indexFile(uri, 'watch:change');
+    });
+    this.watcher.onDidDelete(uri => {
+      this.log(`File deleted: ${uri.fsPath}`);
+      this.removeFile(uri);
+      this._onDidIndex.fire();
+    });
     context.subscriptions.push(this.watcher as vscode.Disposable);
 
     // read configured external paths and set watchers
@@ -31,6 +62,8 @@ export class TclIndexer {
   }
 
   async buildIndex() {
+    const startedAt = Date.now();
+    this.log('Starting full index rebuild');
     this.index.clear();
     this.variableIndex.clear();
     this.procIndex.clear();
@@ -51,7 +84,23 @@ export class TclIndexer {
       }
     }
 
+    this.setStatus({
+      state: 'indexing',
+      message: `Indexing ${allFiles.length} Tcl files`,
+      filesTotal: allFiles.length,
+      filesProcessed: 0
+    });
+
     await Promise.all(allFiles.map(f => this.indexFile(f)));
+    const durationMs = Date.now() - startedAt;
+    this.log(`Completed full index rebuild: ${allFiles.length} files in ${durationMs}ms`);
+    this.setStatus({
+      state: 'idle',
+      message: `Indexed ${allFiles.length} Tcl files`,
+      filesTotal: allFiles.length,
+      filesProcessed: allFiles.length,
+      durationMs
+    });
     this._onDidIndex.fire();
   }
 
@@ -60,14 +109,25 @@ export class TclIndexer {
     for (const w of this.externalWatchers) { w.dispose(); }
     this.externalWatchers = [];
     this.externalPaths = paths || [];
+    this.log(`Configured external index paths: ${this.externalPaths.length}`);
 
     for (const p of this.externalPaths) {
       try {
         const pattern = `${p.replace(/\\/g, '/')}/**/*.tcl`;
         const w = vscode.workspace.createFileSystemWatcher(pattern);
-        w.onDidCreate(uri => this.indexFile(uri));
-        w.onDidChange(uri => this.indexFile(uri));
-        w.onDidDelete(uri => this.removeFile(uri));
+        w.onDidCreate(uri => {
+          this.log(`External file created: ${uri.fsPath}`);
+          this.indexFile(uri, 'external:create');
+        });
+        w.onDidChange(uri => {
+          this.log(`External file changed: ${uri.fsPath}`);
+          this.indexFile(uri, 'external:change');
+        });
+        w.onDidDelete(uri => {
+          this.log(`External file deleted: ${uri.fsPath}`);
+          this.removeFile(uri);
+          this._onDidIndex.fire();
+        });
         this.externalWatchers.push(w);
         if (context) context.subscriptions.push(w as vscode.Disposable);
       } catch (e) {
@@ -79,8 +139,9 @@ export class TclIndexer {
     await this.buildIndex();
   }
 
-  async indexFile(uri: vscode.Uri) {
+  async indexFile(uri: vscode.Uri, source: string = 'manual') {
   try {
+    this.log(`Indexing file (${source}): ${uri.fsPath}`);
     // remove existing entries for this file before re-indexing
     this.removeFile(uri);
 
@@ -105,12 +166,6 @@ export class TclIndexer {
         namespaceStack.push(n);
         fileNamespaces.add(n);
         namespaceDepths.push(braceDepth + 1); // the depth after the opening brace
-        
-        // Store namespace location for go-to-definition
-        const nsLoc = new vscode.Location(uri, new vscode.Range(i, 0, i, line.length));
-        const existing = this.namespaceIndex.get(n) || [];
-        existing.push(nsLoc);
-        this.namespaceIndex.set(n, existing);
       }
 
       // count braces on this line to track depth (ignore braces inside strings)
@@ -211,13 +266,10 @@ export class TclIndexer {
         const vpos = new vscode.Position(i, line.indexOf(vname));
         const vloc = new vscode.Location(uri, vpos);
 
-        // Track which namespace this variable belongs to
-        const varNamespace = namespaceStack.length ? namespaceStack[namespaceStack.length - 1] : undefined;
-
         const varArr = this.variableIndex.get(vname) || [];
         const existsVar = varArr.findIndex(v => v.loc.uri.toString() === uri.toString() && v.loc.range.start.line === i);
         if (existsVar === -1) {
-          varArr.push({ loc: vloc, value: rawValue, namespace: varNamespace });
+          varArr.push({ loc: vloc, value: rawValue });
           this.variableIndex.set(vname, varArr);
         }
 
@@ -273,7 +325,9 @@ export class TclIndexer {
     const fileKey = uri.toString();
     this.fileImports.set(fileKey, { fileNamespaces, importedNamespaces, importedProcs });
   } catch (e) {
-    // ignore unreadable files
+    const msg = e instanceof Error ? e.message : String(e);
+    this.log(`Failed to index file: ${uri.fsPath} (${msg})`);
+    this.setStatus({ state: 'error', message: `Index error: ${uri.fsPath}` });
   }
   this._onDidIndex.fire();
 }
@@ -307,13 +361,6 @@ export class TclIndexer {
         else this.methodIndex.delete(k);
       }
     }
-    for (const [k, arr] of this.namespaceIndex.entries()) {
-      const filtered = arr.filter(l => l.uri.toString() !== uri.toString());
-      if (filtered.length !== arr.length) {
-        if (filtered.length) this.namespaceIndex.set(k, filtered);
-        else this.namespaceIndex.delete(k);
-      }
-    }
     // Clear dicts from removed file (simplified: clear all since we track by var name only)
     this.dictIndex.clear();
     // also clean up fileImports
@@ -321,169 +368,12 @@ export class TclIndexer {
     // Note: don't fire _onDidIndex here as this is called from indexFile
   }
 
-  // Linting: detect duplicate definitions, unused variables, and bracket/brace mismatches
-  async lint(): Promise<Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }>> {
-    const results: Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }> = [];
-
-    // duplicate procs/methods
-    const checkDuplicates = (map: Map<string, any[]>) => {
-      for (const [name, arr] of map.entries()) {
-        if (arr.length > 1) {
-          for (const entry of arr) {
-            const diag = new vscode.Diagnostic(entry.loc.range, `Duplicate definition of '${name}'`, vscode.DiagnosticSeverity.Warning);
-            results.push({ uri: entry.loc.uri, diagnostics: [diag] });
-          }
-        }
-      }
-    };
-
-    checkDuplicates(this.procIndex);
-    checkDuplicates(this.methodIndex);
-
-    // bracket and brace matching for all files
-    const files = await vscode.workspace.findFiles('**/*.tcl');
-    const docTexts: Map<string, string> = new Map();
-    const docLines: Map<string, string[]> = new Map();
-    for (const f of files) {
-      try { 
-        const d = await vscode.workspace.openTextDocument(f); 
-        docTexts.set(f.toString(), d.getText()); 
-        docLines.set(f.toString(), d.getText().split(/\r?\n/));
-      } catch (e) { }
-    }
-
-    // check bracket/brace matching
-    for (const [uriStr, lines] of docLines.entries()) {
-      const uri = vscode.Uri.parse(uriStr);
-      const stack: Array<{ char: string; line: number; col: number }> = [];
-      
-      for (let lineNum = 0; lineNum < lines.length; lineNum++) {
-        const line = lines[lineNum];
-        for (let col = 0; col < line.length; col++) {
-          const ch = line[col];
-          
-          // skip characters inside strings (basic heuristic)
-          if (ch === '"') {
-            // find closing quote
-            let endQuote = line.indexOf('"', col + 1);
-            if (endQuote !== -1) {
-              col = endQuote;
-              continue;
-            }
-          }
-          
-          if (ch === '{' || ch === '[') {
-            stack.push({ char: ch, line: lineNum, col });
-          } else if (ch === '}' || ch === ']') {
-            if (stack.length === 0) {
-              const range = new vscode.Range(lineNum, col, lineNum, col + 1);
-              const diag = new vscode.Diagnostic(range, `Unmatched closing '${ch}'`, vscode.DiagnosticSeverity.Error);
-              results.push({ uri, diagnostics: [diag] });
-            } else {
-              const last = stack.pop()!;
-              const expected = last.char === '{' ? '}' : ']';
-              if (ch !== expected) {
-                const range = new vscode.Range(lineNum, col, lineNum, col + 1);
-                const diag = new vscode.Diagnostic(range, `Mismatched bracket: expected '${expected}' but found '${ch}'`, vscode.DiagnosticSeverity.Error);
-                results.push({ uri, diagnostics: [diag] });
-              }
-            }
-          }
-        }
-      }
-      
-      // report unclosed brackets/braces
-      for (const unclosed of stack) {
-        const range = new vscode.Range(unclosed.line, unclosed.col, unclosed.line, unclosed.col + 1);
-        const expected = unclosed.char === '{' ? '}' : ']';
-        const diag = new vscode.Diagnostic(range, `Unclosed '${unclosed.char}' (expected '${expected}')`, vscode.DiagnosticSeverity.Error);
-        results.push({ uri: vscode.Uri.parse(uriStr), diagnostics: [diag] });
-      }
-    }
-
-    // unused variables: search for $name occurrences across workspace files
-    const vars = Array.from(this.variableIndex.entries());
-    for (const [name, arr] of vars) {
-      let used = false;
-      const searchPattern = new RegExp(`\\$${name}\\b`);
-      for (const [, text] of docTexts) {
-        if (searchPattern.test(text)) { used = true; break; }
-      }
-      if (!used) {
-        for (const v of arr) {
-          const d = new vscode.Diagnostic(v.loc.range, `Variable '${name}' appears to be unused`, vscode.DiagnosticSeverity.Information);
-          results.push({ uri: v.loc.uri, diagnostics: [d] });
-        }
-      }
-    }
-
-    // aggregate diagnostics by uri
-    const byUri = new Map<string, vscode.Diagnostic[]>();
-    for (const r of results) {
-      const key = r.uri.toString();
-      const exist = byUri.get(key) || [];
-      exist.push(...r.diagnostics);
-      byUri.set(key, exist);
-    }
-
-    const out: Array<{ uri: vscode.Uri; diagnostics: vscode.Diagnostic[] }> = [];
-    for (const [k, diags] of byUri.entries()) {
-      out.push({ uri: vscode.Uri.parse(k), diagnostics: diags });
-    }
-    return out;
-  }
-
   async lookup(name: string): Promise<vscode.Location[]> {
     return this.lookupInContext(name, undefined);
   }
 
-  // Helper: determine which namespace a cursor position is in (by scanning document for namespace blocks)
-  private getNamespaceAtCursorPosition(document: vscode.TextDocument, position: vscode.Position): string | undefined {
-    const text = document.getText();
-    const lines = text.split(/\r?\n/);
-    const targetLine = position.line;
-
-    const namespaceStack: string[] = [];
-    const namespaceDepths: number[] = [];
-    let braceDepth = 0;
-
-    for (let i = 0; i < Math.min(targetLine + 1, lines.length); i++) {
-      const line = lines[i];
-
-      // Track namespace eval declarations
-      const nsMatch = line.match(/^\s*namespace\s+eval\s+([A-Za-z0-9_:]+)\s*\{/);
-      if (nsMatch) {
-        const ns = nsMatch[1].replace(/^::+/, '');
-        namespaceStack.push(ns);
-        namespaceDepths.push(braceDepth + 1);
-      }
-
-      // Count braces
-      let inString = false;
-      for (let c = 0; c < line.length; c++) {
-        const ch = line[c];
-        const prev = c > 0 ? line[c - 1] : '';
-        if (ch === '"' && prev !== '\\') {
-          inString = !inString;
-          continue;
-        }
-        if (inString) continue;
-        if (ch === '{') braceDepth++;
-        else if (ch === '}') braceDepth--;
-      }
-
-      // Pop namespaces when their closing brace is found
-      while (namespaceDepths.length > 0 && braceDepth < namespaceDepths[namespaceDepths.length - 1]) {
-        namespaceStack.pop();
-        namespaceDepths.pop();
-      }
-    }
-
-    return namespaceStack.length ? namespaceStack[namespaceStack.length - 1] : undefined;
-  }
-
   // lookup with optional document context (to respect imports/namespaces)
-  async lookupInContext(name: string, document?: vscode.TextDocument, position?: vscode.Position): Promise<vscode.Location[]> {
+  async lookupInContext(name: string, document?: vscode.TextDocument): Promise<vscode.Location[]> {
     // normalize and if fq name provided
     const normalized = name.replace(/^::+/, '');
     if (normalized.includes('::')) {
@@ -491,7 +381,7 @@ export class TclIndexer {
     }
 
     const simple = normalized.split('::').pop() || normalized;
-    const entries: { loc: vscode.Location; namespace?: string | null | undefined }[] = [];
+    const entries: vscode.Location[] = [];
 
     // gather matching proc/method entries and filter by context
     const parr = this.procIndex.get(simple) || [];
@@ -509,86 +399,48 @@ export class TclIndexer {
       return false;
     };
 
-    for (const p of parr) if (includeEntry(p)) entries.push({ ...p });
-    for (const m of marr) if (includeEntry(m)) entries.push({ ...m });
-
-    // When we have position context (Go To Definition), prioritize by namespace
-    if (position && document && entries.length > 1) {
-      const currentNamespace = this.getNamespaceAtCursorPosition(document, position);
-      if (currentNamespace) {
-        // Sort: current namespace first, then global, then others
-        entries.sort((a, b) => {
-          const aIsCurrentNs = a.namespace === currentNamespace ? 0 : 1;
-          const bIsCurrentNs = b.namespace === currentNamespace ? 0 : 1;
-          const aIsGlobal = !a.namespace ? 0 : 2;
-          const bIsGlobal = !b.namespace ? 0 : 2;
-          return (aIsCurrentNs + aIsGlobal) - (bIsCurrentNs + bIsGlobal);
-        });
-        // Return only the top match
-        return [entries[0].loc];
-      }
-    }
-
-    const results = entries.map(e => e.loc);
+    for (const p of parr) if (includeEntry(p)) entries.push(p.loc);
+    for (const m of marr) if (includeEntry(m)) entries.push(m.loc);
 
     // fallback to general index entries (simple name or fq)
-    if (!results.length) {
+    if (!entries.length) {
       const exact = this.index.get(simple) || [];
-      results.push(...exact);
-    }
-
-    return results;
-  }
-
-  lookupNamespace(name: string): vscode.Location[] {
-    const normalized = name.replace(/^::+/, '');
-    return this.namespaceIndex.get(normalized) || [];
-  }
-
-  async lookupVariable(name: string, document?: vscode.TextDocument, position?: vscode.Position): Promise<{ loc: vscode.Location; value: string }[]> {
-    const normalized = name.replace(/^::+/, '');
-    const simple = normalized.split('::').pop() || normalized;
-    
-    const allEntries = this.variableIndex.get(simple) || [];
-    if (!allEntries.length) return [];
-
-    // Variables are file-scoped by default
-    // Only include variables from:
-    // 1. The same file, OR
-    // 2. The same namespace (if in a namespace)
-    const currentFile = document?.uri.toString();
-    const currentNamespace = position && document ? this.getNamespaceAtCursorPosition(document, position) : undefined;
-
-    const entries = allEntries.filter(entry => {
-      const entryFile = entry.loc.uri.toString();
-      
-      // Same file - always include
-      if (entryFile === currentFile) return true;
-      
-      // Different file - only include if same namespace
-      if (currentNamespace && entry.namespace === currentNamespace) return true;
-      
-      // Don't include global variables from other files
-      return false;
-    });
-
-    if (!entries.length) return [];
-
-    // When we have position context, prioritize by namespace within the filtered results
-    if (position && document && entries.length > 1 && currentNamespace) {
-      // Sort: current namespace first, then global
-      const sorted = [...entries].sort((a, b) => {
-        const aIsCurrentNs = a.namespace === currentNamespace ? 0 : 1;
-        const bIsCurrentNs = b.namespace === currentNamespace ? 0 : 1;
-        const aIsGlobal = !a.namespace ? 0 : 2;
-        const bIsGlobal = !b.namespace ? 0 : 2;
-        return (aIsCurrentNs + aIsGlobal) - (bIsCurrentNs + bIsGlobal);
-      });
-      // Return only the top match
-      return [sorted[0]];
+      entries.push(...exact);
     }
 
     return entries;
+  }
+
+  async lookupVariable(name: string): Promise<{ loc: vscode.Location; value: string }[]> {
+    const exact = this.variableIndex.get(name) || [];
+    if (exact.length) return exact;
+    const simple = name.split('::').pop() || name;
+    return this.variableIndex.get(simple) || [];
+  }
+
+  lookupNamespace(namespace: string): vscode.Location[] {
+    const normalized = (namespace || '').replace(/^::+/, '').toLowerCase();
+    if (!normalized) return [];
+
+    const dedupe = new Map<string, vscode.Location>();
+    const add = (loc: vscode.Location) => {
+      const key = `${loc.uri.toString()}:${loc.range.start.line}:${loc.range.start.character}`;
+      if (!dedupe.has(key)) dedupe.set(key, loc);
+    };
+
+    for (const arr of this.procIndex.values()) {
+      for (const p of arr) {
+        if ((p.namespace || '').toLowerCase() === normalized) add(p.loc);
+      }
+    }
+
+    for (const arr of this.methodIndex.values()) {
+      for (const m of arr) {
+        if ((m.namespace || '').toLowerCase() === normalized) add(m.loc);
+      }
+    }
+
+    return Array.from(dedupe.values());
   }
 
   // return list of indexed procs available in given document (respect namespaces/imports)
@@ -814,6 +666,7 @@ export class TclIndexer {
   }
 
   async findProcMethodReferences(name: string, document?: vscode.TextDocument): Promise<vscode.Location[]> {
+    const startTime = Date.now();
     const normalized = (name || '').replace(/^::+/, '');
     const short = normalized.split('::').pop() || normalized;
     const sigs = this.getProcSignatures(normalized, document);
@@ -827,6 +680,7 @@ export class TclIndexer {
     }
 
     const files = await vscode.workspace.findFiles('**/*.tcl');
+    this.log(`Code Lens: Finding references for '${normalized}' across ${files.length} file(s)...`);
     const refs: vscode.Location[] = [];
 
     for (const file of files) {
@@ -847,6 +701,8 @@ export class TclIndexer {
       const key = `${loc.uri.toString()}:${loc.range.start.line}:${loc.range.start.character}`;
       if (!dedupe.has(key)) dedupe.set(key, loc);
     }
+    const elapsed = Date.now() - startTime;
+    this.log(`Code Lens: Found ${dedupe.size} reference(s) for '${normalized}' in ${elapsed}ms`);
     return Array.from(dedupe.values());
   }
 

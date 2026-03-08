@@ -10,9 +10,47 @@ import { TclSyntaxChecker } from './syntaxChecker';
 import { TclSyntaxCodeActionProvider } from './syntaxCodeActionProvider';
 import { TclCodeLensProvider } from './codeLensProvider';
 import { TclReferenceProvider } from './referenceProvider';
+import { TclIndexerStatus } from './indexer';
 
 export function activate(context: vscode.ExtensionContext) {
   const indexer = new TclIndexer();
+
+  const indexerLogChannel = vscode.window.createOutputChannel('Tcl Indexer');
+  context.subscriptions.push(indexerLogChannel);
+
+  const indexerStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
+  indexerStatusBar.command = 'tcl.showIndexerLog';
+  indexerStatusBar.tooltip = 'Show Tcl indexer log';
+  indexerStatusBar.text = '$(database) Tcl Index: idle';
+  indexerStatusBar.show();
+  context.subscriptions.push(indexerStatusBar);
+
+  const showIndexerLogCmd = vscode.commands.registerCommand('tcl.showIndexerLog', () => {
+    indexerLogChannel.show(true);
+  });
+  context.subscriptions.push(showIndexerLogCmd);
+
+  const renderIndexerStatus = (status: TclIndexerStatus) => {
+    if (status.state === 'indexing') {
+      const progress = status.filesTotal
+        ? ` (${status.filesProcessed || 0}/${status.filesTotal})`
+        : '';
+      indexerStatusBar.text = `$(sync~spin) Tcl Index${progress}`;
+      return;
+    }
+
+    if (status.state === 'error') {
+      indexerStatusBar.text = `$(error) Tcl Index: ${status.message}`;
+      return;
+    }
+
+    const duration = typeof status.durationMs === 'number' ? ` in ${status.durationMs}ms` : '';
+    indexerStatusBar.text = `$(database) Tcl Index: ready${duration}`;
+  };
+
+  indexer.onDidLog(msg => indexerLogChannel.appendLine(msg), null, context.subscriptions);
+  indexer.onDidStatus(renderIndexerStatus, null, context.subscriptions);
+
   indexer.activate(context);
 
   // disposables for optional features
@@ -24,7 +62,6 @@ export function activate(context: vscode.ExtensionContext) {
   let codeLensDisposable: vscode.Disposable | undefined;
   let refDisposable: vscode.Disposable | undefined;
   let syntaxCodeActionDisposable: vscode.Disposable | undefined;
-  let diagnostics: vscode.DiagnosticCollection | undefined;
   let syntaxDiagnostics: vscode.DiagnosticCollection | undefined;
 
   // syntax checker
@@ -98,22 +135,6 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(codeLensDisposable);
       }
     } else if (codeLensDisposable) { codeLensDisposable.dispose(); codeLensDisposable = undefined; }
-
-    // lint diagnostics
-    if (cfg.lint === true) {
-      if (!diagnostics) {
-        diagnostics = vscode.languages.createDiagnosticCollection('tcl-lint');
-        context.subscriptions.push(diagnostics);
-      }
-      const runLint = async () => {
-        const lintResults = await indexer.lint();
-        diagnostics!.clear();
-        for (const r of lintResults) diagnostics!.set(r.uri, r.diagnostics);
-      };
-      // initial and on index updates
-      runLint();
-      indexer.onDidIndex(runLint, null, context.subscriptions);
-    } else if (diagnostics) { diagnostics.clear(); diagnostics.dispose(); diagnostics = undefined; }
   };
 
   // syntax checking with tclsh

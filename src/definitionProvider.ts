@@ -18,7 +18,7 @@ export class TclDefinitionProvider implements vscode.DefinitionProvider {
     if (varRange) {
       const fullName = document.getText(varRange);
       const varName = fullName.slice(1); // strip $
-      const varLocations = await this.indexer.lookupVariable(varName, document, position);
+      const varLocations = await this.indexer.lookupVariable(varName);
       return varLocations.length ? varLocations.map(v => v.loc) : null;
     }
 
@@ -56,7 +56,7 @@ export class TclDefinitionProvider implements vscode.DefinitionProvider {
     }
 
     // Otherwise check for proc/method
-    const locations = await this.indexer.lookupInContext(name, document, position);
+    const locations = await this.indexer.lookupInContext(name, document);
     return locations.length ? locations : null;
   }
 }
