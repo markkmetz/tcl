@@ -165,6 +165,15 @@
           "maximum": 300,
           "description": "Delay in seconds before running syntax check after document change.",
           "markdownDescription": "Delay in seconds before running syntax check after a document change. Higher values reduce checking frequency (useful for slow remote services). Range: 1-300 seconds."
+        },
+        "tcl.runtime.packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "TCL packages to load before syntax checking (e.g. [\"Itcl\", \"Tk\"]). Each entry is passed to 'package require' in the init script so commands from those libraries are available during syntax checking.",
+          "markdownDescription": "TCL packages to load before syntax checking. Each entry is passed to `package require`. Example: `[\"Itcl\", \"Tk\"]`."
         }
       }
     },

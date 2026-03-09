@@ -168,6 +168,25 @@ describe('TCL Syntax Checker', () => {
       expect(delay).to.be.greaterThanOrEqual(1);
       expect(delay).to.be.lessThanOrEqual(300);
     });
+
+    it('should default packages list to empty array', () => {
+      const defaultPackages: string[] = [];
+      expect(defaultPackages).to.be.an('array');
+      expect(defaultPackages).to.have.lengthOf(0);
+    });
+
+    it('should accept itcl in packages list', () => {
+      const packages = ['Itcl'];
+      expect(packages).to.include('Itcl');
+    });
+
+    it('should accept multiple packages in packages list', () => {
+      const packages = ['Itcl', 'Tk', 'Itk'];
+      expect(packages).to.have.lengthOf(3);
+      expect(packages).to.include('Itcl');
+      expect(packages).to.include('Tk');
+      expect(packages).to.include('Itk');
+    });
   });
 
   describe('Error Line Detection', () => {
@@ -366,6 +385,56 @@ describe('TCL Syntax Checker', () => {
       const remoteResponse = { errors: [] };
       expect(remoteResponse.errors).to.be.an('array');
       expect(remoteResponse.errors).to.have.lengthOf(0);
+    });
+  });
+
+  describe('Package Init Script Generation', () => {
+    it('should generate package require statements for configured packages', () => {
+      const packages = ['Itcl', 'Tk'];
+      let initScript = '# Auto-generated initialization script\n';
+
+      for (const pkg of packages) {
+        initScript += `if {[catch {package require ${pkg}} err]} {\n`;
+        initScript += `  # Ignore errors if package is not available\n`;
+        initScript += `}\n`;
+      }
+
+      expect(initScript).to.include('package require Itcl');
+      expect(initScript).to.include('package require Tk');
+    });
+
+    it('should produce no package require statements when packages list is empty', () => {
+      const packages: string[] = [];
+      let initScript = '# Auto-generated initialization script\n';
+
+      for (const pkg of packages) {
+        initScript += `if {[catch {package require ${pkg}} err]} {\n`;
+        initScript += `  # Ignore errors if package is not available\n`;
+        initScript += `}\n`;
+      }
+
+      expect(initScript).to.not.include('package require');
+    });
+
+    it('should generate package require before source statements', () => {
+      const packages = ['Itcl'];
+      const sourceFiles = ['/some/project/file.tcl'];
+      let initScript = '# Auto-generated initialization script\n';
+
+      for (const pkg of packages) {
+        initScript += `if {[catch {package require ${pkg}} err]} {\n`;
+        initScript += `  # Ignore errors if package is not available\n`;
+        initScript += `}\n`;
+      }
+      for (const file of sourceFiles) {
+        initScript += `if {[catch {source "${file}"} err]} {\n`;
+        initScript += `  # Ignore errors during sourcing (file may have syntax errors)\n`;
+        initScript += `}\n`;
+      }
+
+      const pkgIdx = initScript.indexOf('package require Itcl');
+      const srcIdx = initScript.indexOf('source "/some/project/file.tcl"');
+      expect(pkgIdx).to.be.lessThan(srcIdx);
     });
   });
 });

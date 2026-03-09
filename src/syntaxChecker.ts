@@ -87,6 +87,15 @@ export class TclSyntaxChecker {
         // Create initialization script that sources all project files
         let initScript = '# Auto-generated initialization script\n';
         initScript += '# This sources all project TCL files to provide context for syntax checking\n';
+
+        // Load user-configured packages (e.g. Itcl, Tk) before sourcing project files
+        const packages = config.get<string[]>('packages', []);
+        for (const pkg of packages) {
+          initScript += `if {[catch {package require ${pkg}} err]} {\n`;
+          initScript += `  # Ignore errors if package is not available\n`;
+          initScript += `}\n`;
+        }
+
         for (const sourceFile of sourceFiles) {
           // Escape Windows backslashes
           const escapedPath = sourceFile.replace(/\\/g, '/');
