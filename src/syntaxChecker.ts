@@ -11,11 +11,32 @@ export interface SyntaxCheckResult {
   diagnostics: vscode.Diagnostic[];
 }
 
+export interface SyntaxCheckStatus {
+  state: 'idle' | 'checking' | 'complete';
+  fileName?: string;
+  errorCount?: number;
+}
+
 export class TclSyntaxChecker {
   private checkTimeout: NodeJS.Timeout | undefined;
   private readonly debounceMs: number = 500; // internal debounce before applying config delay
+  private logChannel?: vscode.OutputChannel;
+  private readonly _onDidStatus = new vscode.EventEmitter<SyntaxCheckStatus>();
+  public readonly onDidStatus = this._onDidStatus.event;
   
-  constructor() {}
+  constructor(logChannel?: vscode.OutputChannel) {
+    this.logChannel = logChannel;
+  }
+
+  private log(message: string): void {
+    if (this.logChannel) {
+      this.logChannel.appendLine(`[Syntax Check] ${new Date().toLocaleTimeString()} ${message}`);
+    }
+  }
+
+  private setStatus(status: SyntaxCheckStatus): void {
+    this._onDidStatus.fire(status);
+  }
 
   /**
    * Check syntax of a TCL document using tclsh
@@ -46,17 +67,47 @@ export class TclSyntaxChecker {
     const config = vscode.workspace.getConfiguration('tcl.runtime');
     const tclshPath = config.get<string>('tclshPath', 'tclsh');
     
-    return new Promise((resolve) => {
-      // Create a temporary file with the document content
+    return new Promise(async (resolve) => {
       const tempDir = os.tmpdir();
-      const tempFile = path.join(tempDir, `vscode-tcl-check-${Date.now()}.tcl`);
+      const timestamp = Date.now();
+      const tempFile = path.join(tempDir, `vscode-tcl-check-${timestamp}.tcl`);
+      const initFile = path.join(tempDir, `vscode-tcl-init-${timestamp}.tcl`);
+      const wrapperFile = path.join(tempDir, `vscode-tcl-wrapper-${timestamp}.tcl`);
       
       try {
-        // Write document content to temp file
+        // Write the document content that we want to check
         fs.writeFileSync(tempFile, document.getText(), 'utf8');
         
-        // Run tclsh with the temp file directly
-        const proc = child_process.spawn(tclshPath, [tempFile], {
+        // Find all TCL files in workspace to source before checking
+        const allFiles = await vscode.workspace.findFiles('**/*.tcl');
+        const sourceFiles = allFiles
+          .filter(file => file.toString() !== document.uri.toString()) // Exclude the file being checked
+          .map(file => file.fsPath);
+        
+        // Create initialization script that sources all project files
+        let initScript = '# Auto-generated initialization script\n';
+        initScript += '# This sources all project TCL files to provide context for syntax checking\n';
+        for (const sourceFile of sourceFiles) {
+          // Escape Windows backslashes
+          const escapedPath = sourceFile.replace(/\\/g, '/');
+          initScript += `if {[catch {source "${escapedPath}"} err]} {\n`;
+          initScript += `  # Ignore errors during sourcing (file may have syntax errors)\n`;
+          initScript += `}\n`;
+        }
+        fs.writeFileSync(initFile, initScript, 'utf8');
+        
+        // Create wrapper script that sources init, then the document
+        let wrapperScript = `try {\n`;
+        wrapperScript += `  source "${initFile.replace(/\\/g, '/')}"\n`;
+        wrapperScript += `  source "${tempFile.replace(/\\/g, '/')}"\n`;
+        wrapperScript += `} on error {err} {\n`;
+        wrapperScript += `  puts stderr $err\n`;
+        wrapperScript += `  exit 1\n`;
+        wrapperScript += `}\n`;
+        fs.writeFileSync(wrapperFile, wrapperScript, 'utf8');
+        
+        // Run tclsh with the wrapper script
+        const proc = child_process.spawn(tclshPath, [wrapperFile], {
           cwd: path.dirname(document.fileName),
           timeout: 5000
         });
@@ -81,15 +132,19 @@ export class TclSyntaxChecker {
           );
           diagnostic.source = 'tcl-syntax';
           
-          // Clean up temp file
+          // Clean up temp files
           try { fs.unlinkSync(tempFile); } catch {}
+          try { fs.unlinkSync(initFile); } catch {}
+          try { fs.unlinkSync(wrapperFile); } catch {}
           
           resolve({ uri: document.uri, diagnostics: [diagnostic] });
         });
         
         proc.on('close', (code) => {
-          // Clean up temp file
+          // Clean up temp files
           try { fs.unlinkSync(tempFile); } catch {}
+          try { fs.unlinkSync(initFile); } catch {}
+          try { fs.unlinkSync(wrapperFile); } catch {}
           
           if (code === 0) {
             // No syntax errors
@@ -103,8 +158,10 @@ export class TclSyntaxChecker {
         });
         
       } catch (err: any) {
-        // Clean up temp file on error
+        // Clean up temp files on error
         try { fs.unlinkSync(tempFile); } catch {}
+        try { fs.unlinkSync(initFile); } catch {}
+        try { fs.unlinkSync(wrapperFile); } catch {}
         
         const diagnostic = new vscode.Diagnostic(
           new vscode.Range(0, 0, 0, 0),
@@ -361,24 +418,39 @@ export class TclSyntaxChecker {
   }
 
   /**
-   * Schedule a syntax check with debouncing
+   * Schedule a syntax check (immediate on save, debounced on change)
    */
   scheduleCheck(
     document: vscode.TextDocument,
-    diagnosticCollection: vscode.DiagnosticCollection
+    diagnosticCollection: vscode.DiagnosticCollection,
+    immediate: boolean = false
   ): void {
     if (this.checkTimeout) {
       clearTimeout(this.checkTimeout);
     }
     
-    const config = vscode.workspace.getConfiguration('tcl.runtime');
-    const delaySeconds = config.get<number>('syntaxCheckDelay', 10);
-    const delayMs = Math.max(1000, delaySeconds * 1000); // At least 1 second
-    
-    this.checkTimeout = setTimeout(async () => {
+    const doCheck = async () => {
+      const fileName = document.fileName.split(/[\\/]/).pop() || document.fileName;
+      this.setStatus({ state: 'checking', fileName });
+      this.log(`Checking syntax: ${fileName}`);
       const result = await this.checkSyntax(document);
       diagnosticCollection.set(result.uri, result.diagnostics);
-    }, this.debounceMs + delayMs);
+      const errorCount = result.diagnostics.length;
+      const status = errorCount === 0 ? 'OK' : `${errorCount} error(s)`;
+      this.log(`Syntax check complete: ${fileName} - ${status}`);
+      this.setStatus({ state: 'complete', fileName, errorCount });
+    };
+    
+    if (immediate) {
+      // On save: check immediately
+      doCheck();
+    } else {
+      // On change: debounce (though we're not using this anymore)
+      const config = vscode.workspace.getConfiguration('tcl.runtime');
+      const delaySeconds = config.get<number>('syntaxCheckDelay', 10);
+      const delayMs = Math.max(1000, delaySeconds * 1000);
+      this.checkTimeout = setTimeout(doCheck, this.debounceMs + delayMs);
+    }
   }
 
   /**

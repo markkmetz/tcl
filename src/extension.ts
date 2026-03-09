@@ -6,7 +6,7 @@ import { TclCompletionProvider } from './completionProvider';
 import { TclSignatureProvider } from './signatureProvider';
 import { TclSemanticProvider } from './semanticProvider';
 import { TclFormatter } from './formatter';
-import { TclSyntaxChecker } from './syntaxChecker';
+import { TclSyntaxChecker, SyntaxCheckStatus } from './syntaxChecker';
 import { TclSyntaxCodeActionProvider } from './syntaxCodeActionProvider';
 import { TclCodeLensProvider } from './codeLensProvider';
 import { TclReferenceProvider } from './referenceProvider';
@@ -53,6 +53,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   indexer.activate(context);
 
+  // Syntax checker status bar
+  const syntaxStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 89);
+  syntaxStatusBar.tooltip = 'Syntax check status';
+  syntaxStatusBar.text = '$(check) Syntax: idle';
+  syntaxStatusBar.show();
+  context.subscriptions.push(syntaxStatusBar);
+
   // disposables for optional features
   let defDisposable: vscode.Disposable | undefined;
   let hoverDisposable: vscode.Disposable | undefined;
@@ -65,7 +72,27 @@ export function activate(context: vscode.ExtensionContext) {
   let syntaxDiagnostics: vscode.DiagnosticCollection | undefined;
 
   // syntax checker
-  const syntaxChecker = new TclSyntaxChecker();
+  const syntaxChecker = new TclSyntaxChecker(indexerLogChannel);
+
+  const renderSyntaxStatus = (status: SyntaxCheckStatus) => {
+    if (status.state === 'checking') {
+      syntaxStatusBar.text = `$(sync~spin) Syntax: checking ${status.fileName || ''}`;
+      return;
+    }
+
+    if (status.state === 'complete') {
+      if (status.errorCount === 0) {
+        syntaxStatusBar.text = `$(check) Syntax: OK`;
+      } else {
+        syntaxStatusBar.text = `$(error) Syntax: ${status.errorCount} error${status.errorCount !== 1 ? 's' : ''}`;
+      }
+      return;
+    }
+
+    syntaxStatusBar.text = '$(check) Syntax: idle';
+  };
+
+  syntaxChecker.onDidStatus(renderSyntaxStatus, null, context.subscriptions);
 
   const config = () => vscode.workspace.getConfiguration();
 
@@ -156,38 +183,20 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(syntaxCodeActionDisposable);
       }
       
-      // Check all open TCL documents
+      // Check all open TCL documents on activation
       const checkAllDocuments = () => {
         vscode.workspace.textDocuments.forEach(doc => {
           if (doc.languageId === 'tcl') {
-            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!);
+            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
           }
         });
       };
       
-      // Check on document open
-      context.subscriptions.push(
-        vscode.workspace.onDidOpenTextDocument(doc => {
-          if (doc.languageId === 'tcl') {
-            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!);
-          }
-        })
-      );
-      
-      // Check on document change
-      context.subscriptions.push(
-        vscode.workspace.onDidChangeTextDocument(e => {
-          if (e.document.languageId === 'tcl') {
-            syntaxChecker.scheduleCheck(e.document, syntaxDiagnostics!);
-          }
-        })
-      );
-      
-      // Check on document save
+      // Check on document save only (immediately, no delay)
       context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument(doc => {
           if (doc.languageId === 'tcl') {
-            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!);
+            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
           }
         })
       );
