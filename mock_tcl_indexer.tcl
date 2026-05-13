@@ -196,7 +196,11 @@ proc ::MockIndexer::scan_file {filePath} {
     }
 
     if {[regexp {dict\s+set\s+([A-Za-z0-9_:.]+)\s+([A-Za-z0-9_]+)} $line -> dictVar dictKey]} {
-      set existing [expr {[dict exists $telemetries $dictVar] ? [dict get $telemetries $dictVar] : [list]}]
+      if {[dict exists $telemetries $dictVar]} {
+        set existing [dict get $telemetries $dictVar]
+      } else {
+        set existing [list]
+      }
       lappend existing $dictKey
       dict set telemetries $dictVar [lsort -unique $existing]
     }
