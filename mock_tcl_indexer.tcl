@@ -28,10 +28,9 @@ proc ::MockIndexer::count_braces_outside_strings {line} {
       continue
     }
 
-    if {$ch eq "{"} {
-      incr open
-    } elseif {$ch eq "}"} {
-      incr close
+    switch -- $ch {
+      "{" { incr open }
+      "}" { incr close }
     }
   }
 
@@ -56,14 +55,15 @@ proc ::MockIndexer::tokenize_top_level {text} {
     }
 
     if {!$inString} {
-      if {$ch eq "{"} {
-        incr braceDepth
-      } elseif {$ch eq "}" && $braceDepth > 0} {
-        incr braceDepth -1
-      } elseif {$ch eq "["} {
-        incr bracketDepth
-      } elseif {$ch eq "]" && $bracketDepth > 0} {
-        incr bracketDepth -1
+      switch -- $ch {
+        "{" { incr braceDepth }
+        "}" {
+          if {$braceDepth > 0} { incr braceDepth -1 }
+        }
+        "[" { incr bracketDepth }
+        "]" {
+          if {$bracketDepth > 0} { incr bracketDepth -1 }
+        }
       }
 
       if {[string is space $ch] && $braceDepth == 0 && $bracketDepth == 0} {
@@ -141,7 +141,7 @@ proc ::MockIndexer::scan_file {filePath} {
       set namespaceStack [lrange $namespaceStack 0 end-1]
     }
 
-    if {[regexp {^\s*(proc|method)\s+([A-Za-z0-9_:.]+)\s+\{([^}]*)\}} $line -> type nameRaw paramsRaw]} {
+    if {[regexp {^\s*(proc|method)\s+([A-Za-z0-9_:.]+)\s+\{([^\}]*)\}} $line -> type nameRaw paramsRaw]} {
       set cleanName [::MockIndexer::trim_leading_colons $nameRaw]
       set simpleName $cleanName
       set defNamespace ""
@@ -189,7 +189,6 @@ proc ::MockIndexer::scan_file {filePath} {
     }
   }
 }
-
 proc ::MockIndexer::sanitize_proc_suffix {value} {
   set clean [string map {":" "_" "." "_" "-" "_"} $value]
   if {[regexp {^[0-9]} $clean]} {
@@ -235,8 +234,9 @@ proc ::MockIndexer::emit_mock_script {} {
     set info [dict get $functions $fqName]
     set type [dict get $info type]
     set params [dict get $info params]
+    set payload [list mock true type $type fqName $fqName params $params]
     puts "proc ::$fqName {args} {"
-    puts "    return [dict create mock true type {$type} fqName {$fqName} params [list $params]]"
+    puts "    return [list $payload]"
     puts "}"
     puts ""
   }
