@@ -17,7 +17,11 @@ proc ::MockIndexer::count_braces_outside_strings {line} {
 
   for {set i 0} {$i < [string length $line]} {incr i} {
     set ch [string index $line $i]
-    set prev [expr {$i > 0 ? [string index $line [expr {$i - 1}]] : ""}]
+    if {$i > 0} {
+      set prev [string index $line [expr {$i - 1}]]
+    } else {
+      set prev ""
+    }
 
     if {$ch eq "\"" && $prev ne "\\"} {
       set inString [expr {!$inString}]
@@ -46,7 +50,11 @@ proc ::MockIndexer::tokenize_top_level {text} {
 
   for {set i 0} {$i < [string length $text]} {incr i} {
     set ch [string index $text $i]
-    set prev [expr {$i > 0 ? [string index $text [expr {$i - 1}]] : ""}]
+    if {$i > 0} {
+      set prev [string index $text [expr {$i - 1}]]
+    } else {
+      set prev ""
+    }
 
     if {$ch eq "\"" && $prev ne "\\"} {
       set inString [expr {!$inString}]
@@ -141,7 +149,11 @@ proc ::MockIndexer::scan_file {filePath} {
       set namespaceStack [lrange $namespaceStack 0 end-1]
     }
 
-    if {[regexp {^\s*(proc|method)\s+([A-Za-z0-9_:.]+)\s+\{([^\}]*)\}} $line -> type nameRaw paramsRaw]} {
+    set words [::MockIndexer::tokenize_top_level [string trim $line]]
+    if {[llength $words] >= 3 && [lindex $words 0] in {proc method}} {
+      set type [lindex $words 0]
+      set nameRaw [lindex $words 1]
+      set paramsRaw [lindex $words 2]
       set cleanName [::MockIndexer::trim_leading_colons $nameRaw]
       set simpleName $cleanName
       set defNamespace ""
@@ -160,8 +172,9 @@ proc ::MockIndexer::scan_file {filePath} {
         set normalizedFqName $simpleName
       }
 
-      set params [split [string trim $paramsRaw] " "]
-      set params [lsearch -all -inline -not -exact $params ""]
+      if {[catch {set params [lrange $paramsRaw 0 end]}]} {
+        set params [list $paramsRaw]
+      }
 
       dict set functions $normalizedFqName [dict create \
         type $type \
