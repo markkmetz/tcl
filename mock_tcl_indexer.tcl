@@ -172,8 +172,9 @@ proc ::MockIndexer::scan_file {filePath} {
         set normalizedFqName $simpleName
       }
 
-      if {[catch {set params [lrange $paramsRaw 0 end]}]} {
+      if {[catch {set params [lrange $paramsRaw 0 end]} parseErr]} {
         set params [list $paramsRaw]
+        puts stderr "Warning: fallback parameter parsing at ${filePath}:[expr {$i + 1}] ($parseErr)"
       }
 
       dict set functions $normalizedFqName [dict create \
@@ -219,7 +220,7 @@ proc ::MockIndexer::emit_mock_script {} {
   variable telemetries
 
   puts "# Generated mock Tcl API"
-  puts "# Timestamp: [clock format [clock seconds] -format {%Y-%m-%dT%H:%M:%SZ} -gmt 1]"
+  puts "# Timestamp: [clock format [clock seconds] -format {%Y-%m-%dT%H:%M:%SZ} -timezone :UTC]"
   puts ""
   puts "namespace eval ::mock_index {}"
   puts "namespace eval ::mock_telemetry {}"
