@@ -169,6 +169,21 @@ export function activate(context: vscode.ExtensionContext) {
     const mode = config().get<string>('tcl.runtime.syntaxCheckMode', 'local');
     
     if (mode !== 'disabled') {
+      // Warn once that local tclsh execution is not sandboxed.
+      // Future releases will use a safe Tcl-script-based checker instead.
+      if (mode === 'local') {
+        const warningKey = 'tcl.syntaxSafetyWarningShown';
+        if (!context.globalState.get<boolean>(warningKey)) {
+          context.globalState.update(warningKey, true);
+          vscode.window.showWarningMessage(
+            'Tcl syntax checking runs your workspace files through a local tclsh process, ' +
+            'which is not sandboxed. Avoid opening untrusted Tcl projects with this feature enabled. ' +
+            'A safer script-based checker is planned for a future release.',
+            'OK'
+          );
+        }
+      }
+
       if (!syntaxDiagnostics) {
         syntaxDiagnostics = vscode.languages.createDiagnosticCollection('tcl-syntax');
         context.subscriptions.push(syntaxDiagnostics);
