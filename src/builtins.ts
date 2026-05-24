@@ -9,6 +9,7 @@ export const BUILTINS: Record<string, { description: string; params: string[] }>
   string: { description: 'String operations (length, range, etc.).', params: ['subcommand', 'args...'] },
   list: { description: 'Create or operate on lists.', params: ['elements...'] },
   lappend: { description: 'Append elements to a list variable.', params: ['varName', 'elements...'] },
+  foreach: { description: 'Iterate over list elements.', params: ['varList', 'list', 'body'] },
   lindex: { description: 'Return an element from a list by index.', params: ['list', 'index'] },
   llength: { description: 'Return the length of a list.', params: ['list'] },
   puts: { description: 'Print text to a channel (stdout by default).', params: ['message'] },

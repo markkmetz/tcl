@@ -4,7 +4,7 @@ import Mocha = require('mocha');
 
 export function run(): Promise<void> {
   const mocha = new Mocha({
-    ui: 'bdd',
+    ui: 'tdd',
     color: true,
     timeout: 20000,
   });

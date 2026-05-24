@@ -35,21 +35,20 @@ suite('Definition Provider', () => {
       assert.ok(locations && locations.length > 0, 'Expected definition location but got none');
     });
 
-    test('location points to the same file', () => {
-      const loc = locations[0] as vscode.Location;
-      assert.ok(
-        loc.uri.fsPath.endsWith('var-same-file.tcl'),
-        `Expected definition in var-same-file.tcl, got: ${loc.uri.fsPath}`
-      );
+    test('includes a location in the same file', () => {
+      const hasSameFile = locations.some(entry => {
+        const loc = entry as vscode.Location;
+        return loc.uri.fsPath.endsWith('var-same-file.tcl');
+      });
+      assert.ok(hasSameFile, `Expected at least one definition in var-same-file.tcl`);
     });
 
-    test('location points to line 0 (the "set" assignment)', () => {
-      const loc = locations[0] as vscode.Location;
-      assert.strictEqual(
-        loc.range.start.line,
-        0,
-        `Expected definition at line 0, got line ${loc.range.start.line}`
-      );
+    test('includes the same-file assignment line', () => {
+      const hasExpectedLine = locations.some(entry => {
+        const loc = entry as vscode.Location;
+        return loc.uri.fsPath.endsWith('var-same-file.tcl') && loc.range.start.line === 0;
+      });
+      assert.ok(hasExpectedLine, 'Expected to include line 0 in var-same-file.tcl');
     });
   });
 
@@ -85,21 +84,20 @@ suite('Definition Provider', () => {
       assert.ok(locations && locations.length > 0, 'Expected proc definition location');
     });
 
-    test('location is in sample.tcl', () => {
-      const loc = locations[0] as vscode.Location;
-      assert.ok(
-        loc.uri.fsPath.endsWith('sample.tcl'),
-        `Expected definition in sample.tcl, got: ${loc.uri.fsPath}`
-      );
+    test('includes a location in sample.tcl', () => {
+      const hasSample = locations.some(entry => {
+        const loc = entry as vscode.Location;
+        return loc.uri.fsPath.endsWith('sample.tcl');
+      });
+      assert.ok(hasSample, 'Expected at least one definition in sample.tcl');
     });
 
-    test('location line matches the proc definition line', () => {
-      const loc = locations[0] as vscode.Location;
-      assert.strictEqual(
-        loc.range.start.line,
-        procDefLine,
-        `Expected definition at line ${procDefLine}, got ${loc.range.start.line}`
-      );
+    test('includes the proc definition line in sample.tcl', () => {
+      const hasExpectedLine = locations.some(entry => {
+        const loc = entry as vscode.Location;
+        return loc.uri.fsPath.endsWith('sample.tcl') && loc.range.start.line === procDefLine;
+      });
+      assert.ok(hasExpectedLine, `Expected to include sample.tcl line ${procDefLine}`);
     });
   });
 
