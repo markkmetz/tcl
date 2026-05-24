@@ -251,5 +251,91 @@ export function collectLightweightSyntaxIssues(lines: string[]): LightweightSynt
     });
   }
 
+  // --- Unused variable and proc detection (within current file only) ---
+  const varDefs: { raw: string; regex: RegExp; isPattern: boolean; line: number }[] = [];
+  const procDefs: { name: string; line: number }[] = [];
+  const varUsages = new Set<string>();
+
+  const setDefRe = /\bset\s+([^\s]+)/i;
+  const procDefRe = /\bproc\s+([A-Za-z0-9_:]+)\b/i;
+  const varUsageRe = /\$(?:\{([^}]+)\}|([A-Za-z_]\w*))/g;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // proc definitions
+    const procMatch = line.match(procDefRe);
+    if (procMatch) {
+      procDefs.push({ name: procMatch[1], line: i });
+    }
+
+    // variable definitions via `set` (simple heuristic)
+    const setMatch = line.match(setDefRe);
+    if (setMatch) {
+      const raw = setMatch[1];
+      // Build a regex: treat $var or ${var} inside the name as wildcard
+      const wildcardPlaceholder = '<<WILDCARD>>';
+      const step1 = raw.replace(/\$\{[^}]+\}|\$[A-Za-z_]\w*/g, wildcardPlaceholder);
+      const escaped = step1.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      const pattern = '^' + escaped.replace(new RegExp(wildcardPlaceholder, 'g'), '.*') + '$';
+      const isPattern = /\$\{[^}]+\}|\$[A-Za-z_]\w*/.test(raw);
+      try {
+        const regex = new RegExp(pattern);
+        varDefs.push({ raw, regex, isPattern, line: i });
+      } catch (e) {
+        // ignore invalid patterns
+      }
+    }
+
+    // collect variable usages like $var or ${var}
+    let m: RegExpExecArray | null;
+    varUsageRe.lastIndex = 0;
+    while ((m = varUsageRe.exec(line)) !== null) {
+      const name = m[1] || m[2];
+      if (!name) continue;
+      // ignore complex expressions inside ${...} that contain other $ signs
+      if (name.includes('$')) continue;
+      // only keep simple literal names (no dots/spaces)
+      if (/[^A-Za-z0-9_:]/.test(name)) continue;
+      varUsages.add(name);
+    }
+  }
+
+  // Determine unused variables: for each definition, check usages
+  for (const vd of varDefs) {
+    let used = false;
+    if (vd.isPattern) {
+      for (const u of varUsages) {
+        if (vd.regex.test(u)) {
+          used = true;
+          break;
+        }
+      }
+    } else {
+      if (varUsages.has(vd.raw)) used = true;
+    }
+
+    if (!used) {
+      issues.push({
+        line: vd.line,
+        message: `Possible unused variable: ${vd.raw}`,
+        severity: 'warning',
+      });
+    }
+  }
+
+  // Determine unused procs: search for usage of proc name elsewhere in file
+  for (const pd of procDefs) {
+    let used = false;
+    const wordRe = new RegExp('\\b' + pd.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b');
+    for (let i = 0; i < lines.length; i++) {
+      if (i === pd.line) continue; // skip definition
+      if (wordRe.test(lines[i])) { used = true; break; }
+    }
+    if (!used) {
+      issues.push({ line: pd.line, message: `Possible unused proc: ${pd.name}`, severity: 'warning' });
+    }
+  }
+
   return issues;
 }

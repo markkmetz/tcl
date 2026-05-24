@@ -716,23 +716,39 @@ export class TclSyntaxChecker {
    */
   private isDiagnosticSuppressed(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): boolean {
     try {
-      // File-level suppression: check first 50 lines
+      // Determine diagnostic level string
+      const diagLevel = (diagnostic && typeof diagnostic.severity === 'number' && diagnostic.severity === vscode.DiagnosticSeverity.Warning)
+        ? 'warning' : 'error';
+
+      // File-level suppression: check first 50 lines and respect level
       const headLines = Math.min(50, document.lineCount);
       for (let i = 0; i < headLines; i++) {
         const txt = document.lineAt(i).text;
-        if (/#\s*tcl-ignore-file\b/i.test(txt)) return true;
+        const m = txt.match(/#\s*tcl-ignore-file(?::(error|warning|all))?\b/i);
+        if (m) {
+          const token = (m[1] || 'all').toLowerCase();
+          if (token === 'all' || token === diagLevel) return true;
+        }
       }
 
       const line = Math.max(0, Math.min(diagnostic.range.start.line, document.lineCount - 1));
 
       // Same-line suppression
       const lineText = document.lineAt(line).text;
-      if (/#\s*tcl-ignore\b/i.test(lineText)) return true;
+      const ms = lineText.match(/#\s*tcl-ignore(?::(error|warning|all))?\b/i);
+      if (ms) {
+        const token = (ms[1] || 'all').toLowerCase();
+        if (token === 'all' || token === diagLevel) return true;
+      }
 
       // Previous-line suppression (comment above the line)
       if (line > 0) {
         const prevText = document.lineAt(line - 1).text;
-        if (/#\s*tcl-ignore\b/i.test(prevText)) return true;
+        const mp = prevText.match(/#\s*tcl-ignore(?::(error|warning|all))?\b/i);
+        if (mp) {
+          const token = (mp[1] || 'all').toLowerCase();
+          if (token === 'all' || token === diagLevel) return true;
+        }
       }
 
       return false;

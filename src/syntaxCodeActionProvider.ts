@@ -38,22 +38,37 @@ export class TclSyntaxCodeActionProvider implements vscode.CodeActionProvider {
           title: 'Show Tcl syntax troubleshooting tips'
         };
         actions.push(helpAction);
-        // Suppress this specific diagnostic for the line
-        const suppressLine = new vscode.CodeAction('Suppress this error (line)', vscode.CodeActionKind.QuickFix);
-        suppressLine.diagnostics = [diagnostic];
-        suppressLine.edit = new vscode.WorkspaceEdit();
-        const line = Math.max(0, Math.min(diagnostic.range.start.line, document.lineCount - 1));
-        const insertPos = document.lineAt(line).range.end;
-        // Append an inline suppression comment
-        suppressLine.edit.insert(document.uri, insertPos, '  # tcl-ignore');
-        actions.push(suppressLine);
+        // Suppress this diagnostic for the line: provide options for error/warning/all
+        const levels = [
+          { key: 'error', title: 'Suppress this error (line)' },
+          { key: 'warning', title: 'Suppress this warning (line)' },
+          { key: 'all', title: 'Suppress all diagnostics (line)' },
+        ];
+        for (const lvl of levels) {
+          const act = new vscode.CodeAction(lvl.title, vscode.CodeActionKind.QuickFix);
+          act.diagnostics = [diagnostic];
+          act.edit = new vscode.WorkspaceEdit();
+          const ln = Math.max(0, Math.min(diagnostic.range.start.line, document.lineCount - 1));
+          const insertPos = document.lineAt(ln).range.end;
+          const token = lvl.key === 'all' ? '  # tcl-ignore' : `  # tcl-ignore:${lvl.key}`;
+          act.edit.insert(document.uri, insertPos, token);
+          actions.push(act);
+        }
 
-        // Suppress all diagnostics in this file
-        const suppressFile = new vscode.CodeAction('Suppress all errors in file', vscode.CodeActionKind.QuickFix);
-        suppressFile.diagnostics = [diagnostic];
-        suppressFile.edit = new vscode.WorkspaceEdit();
-        suppressFile.edit.insert(document.uri, new vscode.Position(0, 0), '# tcl-ignore-file\n');
-        actions.push(suppressFile);
+        // Suppress across the file: options for error/warning/all
+        const fileLevels = [
+          { key: 'error', title: 'Suppress all errors in file' },
+          { key: 'warning', title: 'Suppress all warnings in file' },
+          { key: 'all', title: 'Suppress all diagnostics in file' },
+        ];
+        for (const fl of fileLevels) {
+          const fAct = new vscode.CodeAction(fl.title, vscode.CodeActionKind.QuickFix);
+          fAct.diagnostics = [diagnostic];
+          fAct.edit = new vscode.WorkspaceEdit();
+          const token = fl.key === 'all' ? '# tcl-ignore-file\n' : `# tcl-ignore-file:${fl.key}\n`;
+          fAct.edit.insert(document.uri, new vscode.Position(0, 0), token);
+          actions.push(fAct);
+        }
       }
     }
 

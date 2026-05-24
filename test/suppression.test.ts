@@ -21,20 +21,34 @@ describe('Diagnostic suppression', () => {
   // Local copy of suppression detection to avoid importing vscode-dependent class in tests
   function isSuppressed(document: any, diagnostic: any): boolean {
     try {
+      const diagLevel = diagnostic && typeof diagnostic.severity === 'number' && diagnostic.severity === 1 ? 'warning' : 'error';
+
       const headLines = Math.min(50, document.lineCount);
       for (let i = 0; i < headLines; i++) {
         const txt = document.lineAt(i).text;
-        if (/#\s*tcl-ignore-file\b/i.test(txt)) return true;
+        const m = txt.match(/#\s*tcl-ignore-file(?::(error|warning|all))?\b/i);
+        if (m) {
+          const token = (m[1] || 'all').toLowerCase();
+          if (token === 'all' || token === diagLevel) return true;
+        }
       }
 
       const line = Math.max(0, Math.min(diagnostic.range.start.line, document.lineCount - 1));
 
       const lineText = document.lineAt(line).text;
-      if (/#\s*tcl-ignore\b/i.test(lineText)) return true;
+      const ms = lineText.match(/#\s*tcl-ignore(?::(error|warning|all))?\b/i);
+      if (ms) {
+        const token = (ms[1] || 'all').toLowerCase();
+        if (token === 'all' || token === diagLevel) return true;
+      }
 
       if (line > 0) {
         const prevText = document.lineAt(line - 1).text;
-        if (/#\s*tcl-ignore\b/i.test(prevText)) return true;
+        const mp = prevText.match(/#\s*tcl-ignore(?::(error|warning|all))?\b/i);
+        if (mp) {
+          const token = (mp[1] || 'all').toLowerCase();
+          if (token === 'all' || token === diagLevel) return true;
+        }
       }
 
       return false;
@@ -73,5 +87,21 @@ describe('Diagnostic suppression', () => {
     const diag = makeDiag(0);
     const suppressed = isSuppressed(doc as any, diag as any);
     expect(suppressed).to.be.false;
+  });
+
+  it('only suppresses matching severity (warning)', () => {
+    const doc = new MockTextDocument('puts $x  # tcl-ignore:warning\n');
+    const warnDiag = { range: { start: { line: 0 } }, severity: 1 } as any; // Warning
+    const errDiag = { range: { start: { line: 0 } }, severity: 0 } as any; // Error
+    expect(isSuppressed(doc as any, warnDiag)).to.be.true;
+    expect(isSuppressed(doc as any, errDiag)).to.be.false;
+  });
+
+  it('only suppresses matching severity (error)', () => {
+    const doc = new MockTextDocument('puts $x  # tcl-ignore:error\n');
+    const warnDiag = { range: { start: { line: 0 } }, severity: 1 } as any; // Warning
+    const errDiag = { range: { start: { line: 0 } }, severity: 0 } as any; // Error
+    expect(isSuppressed(doc as any, errDiag)).to.be.true;
+    expect(isSuppressed(doc as any, warnDiag)).to.be.false;
   });
 });

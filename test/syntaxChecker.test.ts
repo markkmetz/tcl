@@ -501,9 +501,17 @@ describe('TCL Syntax Checker', () => {
         '  puts "unterminated',
       ]);
 
-      expect(issues).to.have.lengthOf(3);
-      expect(issues.map(issue => issue.line)).to.deep.equal([1, 1, 2]);
-      expect(issues.map(issue => issue.message)).to.deep.equal([
+      // Prioritize checking that the pairing issues are present; other warnings
+      // (unused variables/procs) may also be returned by the lightweight checker.
+      const pairing = issues.filter(issue => [
+        'Possible unmatched brace',
+        'Possible unmatched bracket',
+        'Possible unclosed quote',
+      ].includes(issue.message));
+
+      expect(pairing).to.have.lengthOf(3);
+      expect(pairing.map(issue => issue.line)).to.deep.equal([1, 1, 2]);
+      expect(pairing.map(issue => issue.message)).to.deep.equal([
         'Possible unmatched brace',
         'Possible unmatched bracket',
         'Possible unclosed quote',
