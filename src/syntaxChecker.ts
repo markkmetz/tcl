@@ -54,14 +54,14 @@ export class TclSyntaxChecker {
    */
   async checkSyntax(document: vscode.TextDocument): Promise<SyntaxCheckResult> {
     const config = vscode.workspace.getConfiguration('tcl.runtime');
-    const mode = config.get<string>('syntaxCheckMode', 'local');
+    const mode = config.get<string>('syntaxCheckMode', 'lightweight');
     
     this.log(`checkSyntax called for: ${document.fileName}`);
     this.log(`  Syntax check mode: ${mode}`);
     
-    if (mode === 'disabled') {
-      this.log(`  Syntax checking is disabled, returning no diagnostics`);
-      return { uri: document.uri, diagnostics: [] };
+    if (mode === 'lightweight') {
+      this.log(`  Using lightweight pairing checker`);
+      return this.checkLightweightSyntax(document);
     }
     
     if (mode === 'local') {

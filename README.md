@@ -31,7 +31,7 @@ A simple VS Code extension for Tcl that makes day-to-day editing easier.
 - `tcl.features.semanticTokens`
 - `tcl.features.lint`
 - `tcl.index.externalPaths`
-- `tcl.runtime.syntaxCheckMode` (`disabled`, `local`, `remote`)
+- `tcl.runtime.syntaxCheckMode` (`lightweight`, `local`, `remote`)
 - `tcl.runtime.tclshPath`
 - `tcl.runtime.remoteUrl`
 - `tcl.runtime.syntaxCheckDelay`

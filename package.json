@@ -134,17 +134,17 @@
         "tcl.runtime.syntaxCheckMode": {
           "type": "string",
           "enum": [
-            "disabled",
+            "lightweight",
             "local",
             "remote"
           ],
-          "default": "disabled",
+          "default": "lightweight",
           "enumDescriptions": [
-            "Disable runtime syntax checking",
+            "Run the lightweight pairing checker while you type",
             "Use local tclsh for syntax checking",
             "Use remote syntax check service (requires server running)"
           ],
-          "markdownDescription": "Choose syntax checking mode:\n- **disabled**: No syntax checking\n- **local**: Use local `tclsh` executable\n- **remote**: Use remote HTTP service\n\nOnly one mode can be active."
+          "markdownDescription": "Choose syntax checking mode:\n- **lightweight**: Run the lightweight brace/bracket/quote checker while you type\n- **local**: Use local `tclsh` executable\n- **remote**: Use remote HTTP service\n\nOnly one mode can be active."
         },
         "tcl.runtime.tclshPath": {
           "type": "string",

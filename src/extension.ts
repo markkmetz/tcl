@@ -166,88 +166,81 @@ export function activate(context: vscode.ExtensionContext) {
 
   // syntax checking with tclsh
   const setupSyntaxChecking = () => {
-    const mode = config().get<string>('tcl.runtime.syntaxCheckMode', 'local');
+    const mode = config().get<string>('tcl.runtime.syntaxCheckMode', 'lightweight');
     
-    if (mode !== 'disabled') {
-      // Warn once that local tclsh execution is not sandboxed.
-      // Future releases will use a safe Tcl-script-based checker instead.
-      if (mode === 'local') {
-        const warningKey = 'tcl.syntaxSafetyWarningShown';
-        if (!context.globalState.get<boolean>(warningKey)) {
-          context.globalState.update(warningKey, true);
-          vscode.window.showWarningMessage(
-            'Tcl syntax checking runs your workspace files through a local tclsh process, ' +
-            'which is not sandboxed. Avoid opening untrusted Tcl projects with this feature enabled. ' +
-            'A safer script-based checker is planned for a future release.',
-            'OK'
-          );
-        }
-      }
+    if (!syntaxDiagnostics) {
+      syntaxDiagnostics = vscode.languages.createDiagnosticCollection('tcl-syntax');
+      context.subscriptions.push(syntaxDiagnostics);
+    }
 
-      if (!syntaxDiagnostics) {
-        syntaxDiagnostics = vscode.languages.createDiagnosticCollection('tcl-syntax');
-        context.subscriptions.push(syntaxDiagnostics);
-      }
+    if (!syntaxCodeActionDisposable) {
+      syntaxCodeActionDisposable = vscode.languages.registerCodeActionsProvider(
+        { language: 'tcl' },
+        new TclSyntaxCodeActionProvider(),
+        { providedCodeActionKinds: TclSyntaxCodeActionProvider.providedCodeActionKinds }
+      );
+      context.subscriptions.push(syntaxCodeActionDisposable);
+    }
 
-      if (!syntaxCodeActionDisposable) {
-        syntaxCodeActionDisposable = vscode.languages.registerCodeActionsProvider(
-          { language: 'tcl' },
-          new TclSyntaxCodeActionProvider(),
-          { providedCodeActionKinds: TclSyntaxCodeActionProvider.providedCodeActionKinds }
+    // Warn once that local tclsh execution is not sandboxed.
+    // Future releases will use a safe Tcl-script-based checker instead.
+    if (mode === 'local') {
+      const warningKey = 'tcl.syntaxSafetyWarningShown';
+      if (!context.globalState.get<boolean>(warningKey)) {
+        context.globalState.update(warningKey, true);
+        vscode.window.showWarningMessage(
+          'Tcl syntax checking runs your workspace files through a local tclsh process, ' +
+          'which is not sandboxed. Avoid opening untrusted Tcl projects with this feature enabled. '
+          + 'A safer script-based checker is planned for a future release.',
+          'OK'
         );
-        context.subscriptions.push(syntaxCodeActionDisposable);
-      }
-      
-      // Check all open TCL documents on activation
-      const checkAllDocuments = () => {
-        vscode.workspace.textDocuments.forEach(doc => {
-          if (doc.languageId === 'tcl') {
-            syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
-          }
-        });
-      };
-
-      // Check on document change with the lightweight pairing scanner.
-      context.subscriptions.push(
-        vscode.workspace.onDidChangeTextDocument(event => {
-          if (event.document.languageId === 'tcl') {
-            syntaxChecker.scheduleLightweightCheck(event.document, syntaxDiagnostics!);
-          }
-        })
-      );
-      
-      // Check on document save only (immediately, no delay)
-      context.subscriptions.push(
-        vscode.workspace.onDidSaveTextDocument(doc => {
-          if (doc.languageId === 'tcl') {
-            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
-          }
-        })
-      );
-      
-      // Clear diagnostics on document close
-      context.subscriptions.push(
-        vscode.workspace.onDidCloseTextDocument(doc => {
-          if (doc.languageId === 'tcl') {
-            syntaxDiagnostics!.delete(doc.uri);
-          }
-        })
-      );
-      
-      // Initial check of all open documents
-      checkAllDocuments();
-    } else {
-      // Clear and dispose if disabled
-      if (syntaxDiagnostics) {
-        syntaxDiagnostics.clear();
-        syntaxDiagnostics.dispose();
-        syntaxDiagnostics = undefined;
-      }
-      if (syntaxCodeActionDisposable) {
-        syntaxCodeActionDisposable.dispose();
-        syntaxCodeActionDisposable = undefined;
       }
     }
+
+    const useLightweight = mode === 'lightweight';
+
+    const checkAllDocuments = () => {
+      vscode.workspace.textDocuments.forEach(doc => {
+        if (doc.languageId !== 'tcl') return;
+        if (useLightweight) {
+          syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
+        } else {
+          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+        }
+      });
+    };
+
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeTextDocument(event => {
+        if (event.document.languageId !== 'tcl') return;
+        if (useLightweight) {
+          syntaxChecker.scheduleLightweightCheck(event.document, syntaxDiagnostics!);
+        } else {
+          syntaxChecker.scheduleCheck(event.document, syntaxDiagnostics!, false);
+        }
+      })
+    );
+
+    context.subscriptions.push(
+      vscode.workspace.onDidSaveTextDocument(doc => {
+        if (doc.languageId !== 'tcl') return;
+        if (useLightweight) {
+          syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
+        } else {
+          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+        }
+      })
+    );
+
+    context.subscriptions.push(
+      vscode.workspace.onDidCloseTextDocument(doc => {
+        if (doc.languageId === 'tcl') {
+          syntaxDiagnostics!.delete(doc.uri);
+        }
+      })
+    );
+
+    checkAllDocuments();
   };
 
   // initial registration
