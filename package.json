@@ -179,6 +179,12 @@
           ],
           "description": "Controls whether syntax checks preload workspace Tcl files or only evaluate the current file.",
           "markdownDescription": "Controls import preloading during local syntax checks.\n- **all**: source all workspace Tcl files before checking current file\n- **currentOnly**: check only current file content"
+        },
+        "tcl.runtime.lightweightUsageAnalysis": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable lightweight unused variable/proc analysis.",
+          "markdownDescription": "When **false** (default), lightweight syntax checking focuses on structural syntax issues (brace/bracket/quote). Set to **true** to also include heuristic unused variable/proc warnings."
         }
       }
     },
@@ -231,6 +237,7 @@
     "pretest": "npm run compile",
     "test": "mocha -r ts-node/register 'test/*.test.ts'",
     "test:integration": "npm run compile && tsc -p tsconfig.integration.json && node out/test/runTests.js",
+    "test:integration:lightweight": "npm run compile && tsc -p tsconfig.integration.json && TEST_GREP='Lightweight Syntax Stability Integration' node out/test/runTests.js",
     "build": "npm run compile && npm run package",
     "package": "npm version patch --no-git-tag-version && vsce package"
   },

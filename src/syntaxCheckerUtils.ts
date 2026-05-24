@@ -39,6 +39,20 @@ export function buildSyntaxInitScript(sourceFiles: string[]): string {
   return initScript;
 }
 
+function isCommentStart(line: string, idx: number): boolean {
+  if (line[idx] !== '#') {
+    return false;
+  }
+
+  let k = idx - 1;
+  while (k >= 0 && /\s/.test(line[k])) {
+    k--;
+  }
+
+  // Tcl comments begin at command boundaries (line start or after ';').
+  return k < 0 || line[k] === ';';
+}
+
 export function findBraceErrorLine(lines: string[]): number {
   let depth = 0;
   let lastOpenLine = -1;
@@ -52,15 +66,19 @@ export function findBraceErrorLine(lines: string[]): number {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (!inQuote && depth === 0 && /^\s*#/.test(line)) {
+      continue;
+    }
 
     for (let j = 0; j < line.length; j++) {
       const ch = line[j];
 
-      // Comments: if '#' and not inside quote, rest of line is comment
-      if (ch === '#' && !inQuote) break;
+      if (!inQuote && depth === 0 && ch === '#' && isCommentStart(line, j)) {
+        break;
+      }
 
       // Handle quote toggling (respecting escapes)
-      if (ch === '"' && !isEscaped(line, j)) {
+      if (ch === '"' && !isEscaped(line, j) && depth === 0) {
         inQuote = !inQuote;
         continue;
       }
@@ -68,9 +86,11 @@ export function findBraceErrorLine(lines: string[]): number {
       if (inQuote) continue;
 
       if (ch === '{') {
+        if (isEscaped(line, j)) continue;
         depth++;
         lastOpenLine = i;
       } else if (ch === '}') {
+        if (isEscaped(line, j)) continue;
         depth--;
         if (depth < 0) {
           return i;
@@ -86,10 +106,56 @@ export function findBraceErrorLine(lines: string[]): number {
   return -1;
 }
 
+interface ScannerState {
+  inQuote: boolean;
+  braceDepth: number;
+}
+
+function advanceScannerState(line: string, state: ScannerState): ScannerState {
+  if (!state.inQuote && state.braceDepth === 0 && /^\s*#/.test(line)) {
+    return state;
+  }
+
+  const isEscaped = (idx: number) => {
+    let c = 0;
+    for (let k = idx - 1; k >= 0 && line[k] === '\\'; k--) c++;
+    return (c % 2) === 1;
+  };
+
+  let inQuote = state.inQuote;
+  let braceDepth = state.braceDepth;
+
+  for (let j = 0; j < line.length; j++) {
+    const ch = line[j];
+
+    if (!inQuote && braceDepth === 0 && ch === '#' && isCommentStart(line, j)) {
+      break;
+    }
+
+    if (ch === '"' && !isEscaped(j) && braceDepth === 0) {
+      inQuote = !inQuote;
+      continue;
+    }
+
+    if (inQuote) continue;
+
+    if (ch === '{' && !isEscaped(j)) {
+      braceDepth++;
+      continue;
+    }
+
+    if (ch === '}' && !isEscaped(j) && braceDepth > 0) {
+      braceDepth--;
+    }
+  }
+
+  return { inQuote, braceDepth };
+}
+
 export function findBracketErrorLine(lines: string[]): number {
   let depth = 0;
   let lastOpenLine = -1;
-  let inQuote = false;
+  let state: ScannerState = { inQuote: false, braceDepth: 0 };
 
   const isEscaped = (line: string, idx: number) => {
     let c = 0;
@@ -99,33 +165,57 @@ export function findBracketErrorLine(lines: string[]): number {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (!state.inQuote && state.braceDepth === 0 && /^\s*#/.test(line)) {
+      continue;
+    }
+    let lineInQuote = state.inQuote;
+    let lineBraceDepth = state.braceDepth;
 
     for (let j = 0; j < line.length; j++) {
       const ch = line[j];
 
-      // Comments: if '#' and not inside quote, rest of line is comment
-      if (ch === '#' && !inQuote) break;
+      if (!lineInQuote && lineBraceDepth === 0 && ch === '#' && isCommentStart(line, j)) {
+        break;
+      }
 
       // Handle quote toggling (respecting escapes)
-      if (ch === '"' && !isEscaped(line, j)) {
-        inQuote = !inQuote;
+      if (ch === '"' && !isEscaped(line, j) && lineBraceDepth === 0) {
+        lineInQuote = !lineInQuote;
         continue;
       }
 
-      if (inQuote) continue;
+      if (lineInQuote) continue;
+
+      // Brackets inside brace-quoted segments are treated as literal text.
+      if (lineBraceDepth > 0) {
+        if (ch === '{' && !isEscaped(line, j)) {
+          lineBraceDepth++;
+        } else if (ch === '}' && !isEscaped(line, j) && lineBraceDepth > 0) {
+          lineBraceDepth--;
+        }
+        continue;
+      }
 
 
 
       if (ch === '[') {
+        if (isEscaped(line, j)) continue;
         depth++;
         lastOpenLine = i;
       } else if (ch === ']') {
+        if (isEscaped(line, j)) continue;
         depth--;
         if (depth < 0) {
           return i;
         }
+      } else if (ch === '{' && !isEscaped(line, j)) {
+        lineBraceDepth++;
+      } else if (ch === '}' && !isEscaped(line, j) && lineBraceDepth > 0) {
+        lineBraceDepth--;
       }
     }
+
+    state = advanceScannerState(line, state);
   }
 
   if (depth > 0 && lastOpenLine !== -1) {
@@ -137,6 +227,7 @@ export function findBracketErrorLine(lines: string[]): number {
 
 export function findQuoteErrorLine(lines: string[]): number {
   let inQuote = false;
+  let braceDepth = 0;
   let quoteStartLine = -1;
 
   const isEscaped = (line: string, idx: number) => {
@@ -147,13 +238,32 @@ export function findQuoteErrorLine(lines: string[]): number {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (!inQuote && braceDepth === 0 && /^\s*#/.test(line)) {
+      continue;
+    }
 
     for (let j = 0; j < line.length; j++) {
       const ch = line[j];
 
-      // Comments only matter when we're not already inside a quoted string.
-      if (ch === '#' && !inQuote) {
+      if (!inQuote && braceDepth === 0 && ch === '#' && isCommentStart(line, j)) {
         break;
+      }
+
+      if (!inQuote) {
+        if (ch === '{' && !isEscaped(line, j)) {
+          braceDepth++;
+          continue;
+        }
+
+        if (ch === '}' && !isEscaped(line, j) && braceDepth > 0) {
+          braceDepth--;
+          continue;
+        }
+      }
+
+      // Quote delimiters inside brace-quoted regions are literal text.
+      if (braceDepth > 0) {
+        continue;
       }
 
       if (ch === '"' && !isEscaped(line, j)) {
@@ -300,12 +410,37 @@ export function collectLightweightSyntaxIssues(
     const procDefs: { name: string; line: number }[] = [];
     const varUsages = new Set<string>();
 
-    const setDefRe = /\bset\s+([^\s]+)/i;
-    const procDefRe = /\bproc\s+([A-Za-z0-9_:]+)\b/i;
+    const stripInlineComment = (line: string): string => {
+      let inQuote = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          let backslashes = 0;
+          for (let k = i - 1; k >= 0 && line[k] === '\\'; k--) {
+            backslashes++;
+          }
+          if (backslashes % 2 === 0) {
+            inQuote = !inQuote;
+          }
+          continue;
+        }
+        if (ch === '#' && !inQuote) {
+          return line.slice(0, i);
+        }
+      }
+      return line;
+    };
+
+    const setDefRe = /^\s*set\s+([^\s]+)/;
+    const procDefRe = /^\s*proc\s+([A-Za-z0-9_:]+)\b/;
     const varUsageRe = /\$(?:\{([^}]+)\}|([A-Za-z_]\w*))/g;
+    const varNameRe = /^(?:::)?[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*(?:\([^)]*\))?$/;
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+      const line = stripInlineComment(lines[i]);
+      if (line.trim().length === 0) {
+        continue;
+      }
 
       // proc definitions
       const procMatch = line.match(procDefRe);
@@ -317,6 +452,10 @@ export function collectLightweightSyntaxIssues(
       const setMatch = line.match(setDefRe);
       if (setMatch) {
         const raw = setMatch[1];
+        if (!varNameRe.test(raw)) {
+          continue;
+        }
+
         // Build a regex: treat $var or ${var} inside the name as wildcard
         const wildcardPlaceholder = '<<WILDCARD>>';
         const step1 = raw.replace(/\$\{[^}]+\}|\$[A-Za-z_]\w*/g, wildcardPlaceholder);
@@ -360,6 +499,18 @@ export function collectLightweightSyntaxIssues(
       }
 
       if (!used) {
+        // Array element style vars (e.g. arr($key)) are frequently dynamic,
+        // and lightweight intra-file matching produces many false positives.
+        if (vd.raw.includes('(')) {
+          continue;
+        }
+
+        // Global namespaced variables are often set as configuration/state for
+        // external consumers and may legitimately be unused in-file.
+        if (vd.raw.startsWith('::')) {
+          continue;
+        }
+
         issues.push({
           line: vd.line,
           message: `Possible unused variable: ${vd.raw}`,
@@ -370,6 +521,13 @@ export function collectLightweightSyntaxIssues(
 
     // Determine unused procs: search for usage of proc name elsewhere in file
     for (const pd of procDefs) {
+      // Namespaced procs are frequently exported/library entrypoints and may be
+      // used from other files, which this lightweight intra-file pass cannot
+      // reliably detect.
+      if (pd.name.includes('::')) {
+        continue;
+      }
+
       let used = false;
       const wordRe = new RegExp('\\b' + pd.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b');
       for (let i = 0; i < lines.length; i++) {

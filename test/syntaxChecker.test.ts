@@ -501,20 +501,17 @@ describe('TCL Syntax Checker', () => {
         '  puts "unterminated',
       ]);
 
-      // Prioritize checking that the pairing issues are present; other warnings
-      // (unused variables/procs) may also be returned by the lightweight checker.
+      // Bracket content inside an unmatched brace-quoted segment is treated as
+      // literal text by the lightweight scanner to reduce false positives.
       const pairing = issues.filter(issue => [
         'Possible unmatched brace',
-        'Possible unmatched bracket',
         'Possible unclosed quote',
       ].includes(issue.message));
 
-      expect(pairing).to.have.lengthOf(3);
-      expect(pairing.map(issue => issue.line)).to.deep.equal([1, 1, 2]);
+      expect(pairing).to.have.lengthOf(1);
+      expect(pairing.map(issue => issue.line)).to.deep.equal([1]);
       expect(pairing.map(issue => issue.message)).to.deep.equal([
         'Possible unmatched brace',
-        'Possible unmatched bracket',
-        'Possible unclosed quote',
       ]);
     });
 
@@ -546,6 +543,44 @@ describe('TCL Syntax Checker', () => {
         'set message "He said \"hello\" and left"',
         'puts $message',
       ]);
+
+      const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
+      expect(quoteIssues).to.have.lengthOf(0);
+    });
+
+    it('does not flag bracket mismatch inside a brace-quoted block', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set script {',
+        '  if {[llength $items] > 0} {',
+        '    puts [join $items ","]',
+        '  }',
+        '}',
+      ]);
+
+      const bracketIssues = issues.filter(issue => issue.message === 'Possible unmatched bracket');
+      expect(bracketIssues).to.have.lengthOf(0);
+    });
+
+    it('does not lose closing braces after inline hash text', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {} {',
+        '  if {1} { # inline hash text should not end parsing',
+        '    puts ok',
+        '  }',
+        '}',
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(issue => issue.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(0);
+    });
+
+    it('does not treat quotes inside brace-quoted words as unclosed strings', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set mapping {',
+        '  {"} &quot;',
+        '  {\'} &apos;',
+        '}',
+      ], { includeUsageAnalysis: false });
 
       const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
       expect(quoteIssues).to.have.lengthOf(0);

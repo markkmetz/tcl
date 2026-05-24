@@ -42,12 +42,15 @@ interface CachedLightweightDiagnostics {
   }>;
 }
 
+type DiagnosticMode = 'full' | 'syntaxOnly';
+
 export class TclSyntaxChecker {
   private checkTimeouts: Map<string, NodeJS.Timeout> = new Map();
   private lightweightCheckTimeouts: Map<string, NodeJS.Timeout> = new Map();
   private checkGeneration: Map<string, number> = new Map();
   private lightweightDiagnosticsCache: Map<string, CachedLightweightDiagnostics> = new Map();
   private lastEmittedDiagnosticCounts: Map<string, number> = new Map();
+  private lastEmittedDiagnosticModes: Map<string, DiagnosticMode> = new Map();
   private backgroundScanTimeout: NodeJS.Timeout | undefined;
   private backgroundScanGeneration = 0;
   private backgroundScanCancelled = false;
@@ -145,10 +148,19 @@ export class TclSyntaxChecker {
     key: string,
     uri: vscode.Uri,
     diagnosticCollection: vscode.DiagnosticCollection,
-    diagnostics: vscode.Diagnostic[]
+    diagnostics: vscode.Diagnostic[],
+    mode: DiagnosticMode
   ): void {
     const previousCount = this.lastEmittedDiagnosticCounts.get(key);
     const nextCount = diagnostics.length;
+    const previousMode = this.lastEmittedDiagnosticModes.get(key);
+
+    // Background syntax-only scans are intentionally less strict than full
+    // interactive lightweight checks. Do not let them erase richer results.
+    if (mode === 'syntaxOnly' && previousMode === 'full') {
+      this.log(`${label}: preserving previous full diagnostics; skipping syntax-only overwrite (${previousCount ?? 0} -> ${nextCount})`);
+      return;
+    }
 
     if (previousCount === undefined) {
       this.log(`${label}: no previous emitted diagnostics; writing ${nextCount} diagnostic(s)`);
@@ -171,6 +183,7 @@ export class TclSyntaxChecker {
 
     diagnosticCollection.set(uri, diagnostics);
     this.lastEmittedDiagnosticCounts.set(key, nextCount);
+    this.lastEmittedDiagnosticModes.set(key, mode);
   }
 
   private restoreCachedLightweightDiagnostics(
@@ -572,7 +585,9 @@ export class TclSyntaxChecker {
   }
 
   private async checkLightweightSyntax(document: vscode.TextDocument): Promise<SyntaxCheckResult> {
-    let diagnostics = this.buildLightweightDiagnosticsFromText(document.getText(), document.uri, true);
+    const runtimeConfig = vscode.workspace.getConfiguration('tcl.runtime');
+    const includeUsageAnalysis = runtimeConfig.get<boolean>('lightweightUsageAnalysis', false);
+    let diagnostics = this.buildLightweightDiagnosticsFromText(document.getText(), document.uri, includeUsageAnalysis);
 
     // If we have an indexer, consult it to avoid false unused-proc warnings
     const procMsgRe = /^Possible unused proc:\s*(.+)$/;
@@ -778,7 +793,7 @@ export class TclSyntaxChecker {
         this.log(`Dropping stale full check results for ${fileName} (gen ${expectedGen} != current ${currentGen})`);
         return;
       }
-      this.applyDiagnostics(`Full check for ${document.fileName}`, key, result.uri, diagnosticCollection, result.diagnostics);
+      this.applyDiagnostics(`Full check for ${document.fileName}`, key, result.uri, diagnosticCollection, result.diagnostics, 'full');
       const errorCount = result.diagnostics.length;
       const status = errorCount === 0 ? 'OK' : `${errorCount} error(s)`;
       this.log(`Syntax check complete: ${fileName} - ${status}`);
@@ -820,7 +835,7 @@ export class TclSyntaxChecker {
         this.log(`Dropping lightweight results for ${fileName} due to newer full check (captured ${capturedGen} != current ${currentGen})`);
         return;
       }
-      this.applyDiagnostics(`Lightweight check for ${document.fileName}`, key, result.uri, diagnosticCollection, result.diagnostics);
+      this.applyDiagnostics(`Lightweight check for ${document.fileName}`, key, result.uri, diagnosticCollection, result.diagnostics, 'full');
       const errorCount = result.diagnostics.length;
       const status = errorCount === 0 ? 'OK' : `${errorCount} issue(s)`;
       this.log(`Lightweight syntax check complete: ${fileName} - ${status}`);
@@ -914,7 +929,7 @@ export class TclSyntaxChecker {
               if (cached && cached.mtimeMs === stat.mtime && cached.size === stat.size) {
                 const restored = this.restoreCachedLightweightDiagnostics(key, 'syntaxOnly');
                 if (restored) {
-                  this.applyDiagnostics(`Background restore for ${uri.fsPath}`, key, uri, diagnosticCollection, restored);
+                  this.applyDiagnostics(`Background restore for ${uri.fsPath}`, key, uri, diagnosticCollection, restored, 'syntaxOnly');
                   cachedFiles++;
                   processedFiles++;
                   continue;
@@ -926,8 +941,7 @@ export class TclSyntaxChecker {
               const diagnostics = this.buildLightweightDiagnosticsFromText(text, uri, false)
                 .filter(d => !this.isDiagnosticSuppressedFromLines(text.split(/\r?\n/), d));
 
-              this.logDiagnosticDelta(`Background scan for ${uri.fsPath}`, key, diagnostics);
-              this.applyDiagnostics(`Background scan for ${uri.fsPath}`, key, uri, diagnosticCollection, diagnostics);
+              this.applyDiagnostics(`Background scan for ${uri.fsPath}`, key, uri, diagnosticCollection, diagnostics, 'syntaxOnly');
               this.cacheLightweightDiagnostics(key, stat, diagnostics, 'syntaxOnly');
               processedFiles++;
             } catch (err: any) {

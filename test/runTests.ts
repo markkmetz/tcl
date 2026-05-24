@@ -5,7 +5,9 @@ async function main() {
   // Compiled to out/test/runTests.js — __dirname is <root>/out/test
   const extensionDevelopmentPath = path.resolve(__dirname, '../../');
   const extensionTestsPath = path.resolve(__dirname, './suite/index');
-  const workspaceFixtures = path.resolve(__dirname, '../../test/fixtures');
+  const workspaceFixtures = process.env.TEST_WORKSPACE_PATH
+    ? path.resolve(process.env.TEST_WORKSPACE_PATH)
+    : path.resolve(__dirname, '../../test/fixtures');
 
   try {
     await runTests({
