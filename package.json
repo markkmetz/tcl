@@ -165,6 +165,20 @@
           "maximum": 300,
           "description": "Delay in seconds before running syntax check after document change.",
           "markdownDescription": "Delay in seconds before running syntax check after a document change. Higher values reduce checking frequency (useful for slow remote services). Range: 1-300 seconds."
+        },
+        "tcl.runtime.syntaxCheckImports": {
+          "type": "string",
+          "enum": [
+            "all",
+            "currentOnly"
+          ],
+          "default": "all",
+          "enumDescriptions": [
+            "Preload and source all Tcl files in the workspace before checking the active file.",
+            "Check only the active file without sourcing workspace dependencies."
+          ],
+          "description": "Controls whether syntax checks preload workspace Tcl files or only evaluate the current file.",
+          "markdownDescription": "Controls import preloading during local syntax checks.\n- **all**: source all workspace Tcl files before checking current file\n- **currentOnly**: check only current file content"
         }
       }
     },

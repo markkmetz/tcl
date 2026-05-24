@@ -5,6 +5,13 @@ import * as os from 'os';
 import * as path from 'path';
 import * as https from 'https';
 import * as http from 'http';
+import {
+  buildSyntaxInitScript,
+  classifySyntaxSeverity,
+  extractErrorMessageAndLine,
+  resolveTargetLine,
+  selectPrimaryFrame,
+} from './syntaxCheckerUtils';
 
 export interface SyntaxCheckResult {
   uri: vscode.Uri;
@@ -73,6 +80,7 @@ export class TclSyntaxChecker {
   private async checkWithLocalTclsh(document: vscode.TextDocument): Promise<SyntaxCheckResult> {
     const config = vscode.workspace.getConfiguration('tcl.runtime');
     const tclshPath = config.get<string>('tclshPath', 'tclsh');
+    const importMode = config.get<string>('syntaxCheckImports', 'all');
     const fileName = document.fileName.split(/[\\/]/).pop() || document.fileName;
     
     this.log(`Starting syntax check for: ${fileName}`);
@@ -101,25 +109,23 @@ export class TclSyntaxChecker {
         this.log(`  Successfully wrote tempFile`);
         
         // Find all TCL files in workspace to source before checking
-        this.log(`  Finding all TCL files in workspace...`);
-        const allFiles = await vscode.workspace.findFiles('**/*.tcl');
-        this.log(`  Found ${allFiles.length} total TCL files in workspace`);
-        
-        const sourceFiles = allFiles
-          .filter(file => file.toString() !== document.uri.toString()) // Exclude the file being checked
-          .map(file => file.fsPath);
-        this.log(`  Will source ${sourceFiles.length} files (excluding current document)`);
+        let sourceFiles: string[] = [];
+        if (importMode === 'all') {
+          this.log(`  Finding all TCL files in workspace...`);
+          const allFiles = await vscode.workspace.findFiles('**/*.tcl');
+          this.log(`  Found ${allFiles.length} total TCL files in workspace`);
+
+          sourceFiles = allFiles
+            .filter(file => file.toString() !== document.uri.toString()) // Exclude the file being checked
+            .map(file => file.fsPath)
+            .sort((a, b) => a.localeCompare(b));
+          this.log(`  Will source ${sourceFiles.length} files (excluding current document)`);
+        } else {
+          this.log(`  Import preload mode is "${importMode}"; skipping workspace source preload`);
+        }
         
         // Create initialization script that sources all project files
-        let initScript = '# Auto-generated initialization script\n';
-        initScript += '# This sources all project TCL files to provide context for syntax checking\n';
-        for (const sourceFile of sourceFiles) {
-          // Escape Windows backslashes
-          const escapedPath = sourceFile.replace(/\\/g, '/');
-          initScript += `if {[catch {source "${escapedPath}"} err]} {\n`;
-          initScript += `  # Ignore errors during sourcing (file may have syntax errors)\n`;
-          initScript += `}\n`;
-        }
+        const initScript = buildSyntaxInitScript(sourceFiles);
         this.log(`  Writing init script to initFile (${initScript.length} bytes)`);
         fs.writeFileSync(initFile, initScript, 'utf8');
         this.log(`  Successfully wrote initFile`);
@@ -130,6 +136,7 @@ export class TclSyntaxChecker {
         wrapperScript += `  source "${tempFile.replace(/\\/g, '/')}"\n`;
         wrapperScript += `} on error {err} {\n`;
         wrapperScript += `  puts stderr $err\n`;
+        wrapperScript += `  puts stderr $::errorInfo\n`;
         wrapperScript += `  exit 1\n`;
         wrapperScript += `}\n`;
         this.log(`  Writing wrapper script to wrapperFile (${wrapperScript.length} bytes)`);
@@ -211,7 +218,11 @@ export class TclSyntaxChecker {
           
           // Parse error messages from stderr
           this.log(`  Parsing error output from stderr...`);
-          const diagnostics = this.parseErrorOutput(stderr, document);
+          const diagnostics = this.parseErrorOutput(stderr, document, {
+            tempFile,
+            initFile,
+            wrapperFile,
+          });
           this.log(`  Parsed ${diagnostics.length} diagnostic(s)`);
           diagnostics.forEach((d, idx) => {
             this.log(`    [${idx + 1}] Line ${d.range.start.line}: ${d.message.substring(0, 100)}`);
@@ -287,7 +298,11 @@ export class TclSyntaxChecker {
   /**
    * Parse error output from tclsh and create diagnostics
    */
-  private parseErrorOutput(errorText: string, document: vscode.TextDocument): vscode.Diagnostic[] {
+  private parseErrorOutput(
+    errorText: string,
+    document: vscode.TextDocument,
+    runtimePaths?: { tempFile: string; initFile: string; wrapperFile: string }
+  ): vscode.Diagnostic[] {
     this.log(`parseErrorOutput called`);
     this.log(`  Error text length: ${errorText?.length || 0} bytes`);
     this.log(`  Document line count: ${document.lineCount}`);
@@ -343,57 +358,58 @@ export class TclSyntaxChecker {
     this.log(`  Final parsed error: "${currentError}"`);
     this.log(`  Final error line: ${errorLine}`);
     
-    // Common TCL error patterns that can be detected
-    const errorPatterns = [
-      { pattern: /wrong # args/i, severity: vscode.DiagnosticSeverity.Error },
-      { pattern: /invalid command name/i, severity: vscode.DiagnosticSeverity.Error },
-      { pattern: /extra characters after close-quote/i, severity: vscode.DiagnosticSeverity.Error },
-      { pattern: /missing close-brace/i, severity: vscode.DiagnosticSeverity.Error },
-      { pattern: /missing close-bracket/i, severity: vscode.DiagnosticSeverity.Error },
-      { pattern: /unmatched open brace/i, severity: vscode.DiagnosticSeverity.Error },
-      { pattern: /can't read ".*": no such variable/i, severity: vscode.DiagnosticSeverity.Warning },
-    ];
+    const documentLines: string[] = [];
+    for (let i = 0; i < document.lineCount; i++) {
+      documentLines.push(document.lineAt(i).text);
+    }
     
     if (currentError) {
-      let severity = vscode.DiagnosticSeverity.Error;
-      
-      // Determine severity based on error pattern
-      for (const ep of errorPatterns) {
-        if (ep.pattern.test(currentError)) {
-          severity = ep.severity;
-          this.log(`  Matched error pattern: ${ep.pattern}, severity: ${severity === vscode.DiagnosticSeverity.Error ? 'Error' : 'Warning'}`);
-          break;
-        }
+      const severity = classifySyntaxSeverity(currentError) === 'warning'
+        ? vscode.DiagnosticSeverity.Warning
+        : vscode.DiagnosticSeverity.Error;
+
+      const extracted = extractErrorMessageAndLine(errorText, document.lineCount);
+      const preferredPaths: string[] = [document.fileName];
+      if (runtimePaths) {
+        preferredPaths.push(runtimePaths.tempFile);
       }
-      
-      // Try to find a more specific line number by scanning the document
-      let targetLine = errorLine;
-      
-      // For brace/bracket errors, try to find the actual problematic line
-      if (/missing close-brace|unmatched open brace/i.test(currentError)) {
-        this.log(`  Attempting to find brace error line...`);
-        targetLine = this.findBraceError(document);
-        this.log(`    Found brace error at line ${targetLine}`);
-      } else if (/missing close-bracket/i.test(currentError)) {
-        this.log(`  Attempting to find bracket error line...`);
-        targetLine = this.findBracketError(document);
-        this.log(`    Found bracket error at line ${targetLine}`);
-      } else if (/extra characters after close-quote/i.test(currentError)) {
-        this.log(`  Attempting to find quote error line...`);
-        targetLine = this.findQuoteError(document);
-        this.log(`    Found quote error at line ${targetLine}`);
+
+      const normalizePath = (value: string) => value.replace(/\\/g, '/').toLowerCase();
+
+      const primaryFrame = selectPrimaryFrame(extracted.frames, preferredPaths);
+      let targetLine = resolveTargetLine(extracted.message || currentError, extracted.fallbackLine, documentLines);
+      let diagnosticMessage = currentError;
+
+      if (primaryFrame && typeof primaryFrame.line === 'number') {
+        targetLine = Math.max(0, Math.min(primaryFrame.line, Math.max(0, document.lineCount - 1)));
       }
-      
-      if (targetLine === -1) {
-        this.log(`  Error line detection returned -1, using default: ${errorLine}`);
-        targetLine = errorLine;
+
+      const isExternalFrame = !!(
+        primaryFrame?.filePath &&
+        !preferredPaths.some(p => normalizePath(primaryFrame.filePath!) === normalizePath(p))
+      );
+      if (isExternalFrame && primaryFrame?.filePath) {
+        const sourcedFile = primaryFrame.filePath.split(/[\\/]/).pop() || primaryFrame.filePath;
+        diagnosticMessage = `${currentError} (while sourcing ${sourcedFile})`;
       }
-      
+
       const range = new vscode.Range(targetLine, 0, targetLine, 1000);
-      const diagnostic = new vscode.Diagnostic(range, currentError, severity);
+      const diagnostic = new vscode.Diagnostic(range, diagnosticMessage, severity);
       diagnostic.source = 'tcl-syntax';
       diagnostics.push(diagnostic);
       this.log(`  Created diagnostic at line ${targetLine}: "${currentError}"`);
+
+      const secondaryFrames = extracted.frames.filter(frame => frame !== primaryFrame && frame.filePath);
+      for (const frame of secondaryFrames) {
+        const sourcedFile = frame.filePath!.split(/[\\/]/).pop() || frame.filePath!;
+        const contextDiag = new vscode.Diagnostic(
+          new vscode.Range(0, 0, 0, 0),
+          `Related source context: ${sourcedFile}:${frame.line + 1}`,
+          vscode.DiagnosticSeverity.Warning
+        );
+        contextDiag.source = 'tcl-syntax';
+        diagnostics.push(contextDiag);
+      }
     }
     
     // If no specific error was parsed but we have error text, create a general error
@@ -409,113 +425,6 @@ export class TclSyntaxChecker {
     
     this.log(`  Returning ${diagnostics.length} diagnostic(s)`);
     return diagnostics;
-  }
-
-  /**
-   * Find line with unclosed brace
-   */
-  private findBraceError(document: vscode.TextDocument): number {
-    let depth = 0;
-    let lastOpenLine = -1;
-    
-    for (let i = 0; i < document.lineCount; i++) {
-      const line = document.lineAt(i).text;
-      
-      for (let j = 0; j < line.length; j++) {
-        const ch = line[j];
-        
-        // Skip strings
-        if (ch === '"') {
-          const closeQuote = line.indexOf('"', j + 1);
-          if (closeQuote !== -1) {
-            j = closeQuote;
-            continue;
-          }
-        }
-        
-        if (ch === '{') {
-          depth++;
-          lastOpenLine = i;
-        } else if (ch === '}') {
-          depth--;
-          if (depth < 0) {
-            return i; // Extra closing brace
-          }
-        }
-      }
-    }
-    
-    // If depth > 0, return the last line with an opening brace
-    if (depth > 0 && lastOpenLine !== -1) {
-      return lastOpenLine;
-    }
-    
-    return -1;
-  }
-
-  /**
-   * Find line with unclosed bracket
-   */
-  private findBracketError(document: vscode.TextDocument): number {
-    let depth = 0;
-    let lastOpenLine = -1;
-    
-    for (let i = 0; i < document.lineCount; i++) {
-      const line = document.lineAt(i).text;
-      
-      for (let j = 0; j < line.length; j++) {
-        const ch = line[j];
-        
-        // Skip strings
-        if (ch === '"') {
-          const closeQuote = line.indexOf('"', j + 1);
-          if (closeQuote !== -1) {
-            j = closeQuote;
-            continue;
-          }
-        }
-        
-        if (ch === '[') {
-          depth++;
-          lastOpenLine = i;
-        } else if (ch === ']') {
-          depth--;
-          if (depth < 0) {
-            return i; // Extra closing bracket
-          }
-        }
-      }
-    }
-    
-    // If depth > 0, return the last line with an opening bracket
-    if (depth > 0 && lastOpenLine !== -1) {
-      return lastOpenLine;
-    }
-    
-    return -1;
-  }
-
-  /**
-   * Find line with quote error
-   */
-  private findQuoteError(document: vscode.TextDocument): number {
-    for (let i = 0; i < document.lineCount; i++) {
-      const line = document.lineAt(i).text;
-      let inQuote = false;
-      
-      for (let j = 0; j < line.length; j++) {
-        if (line[j] === '"') {
-          inQuote = !inQuote;
-        }
-      }
-      
-      // If line ends with open quote, check if there are extra characters
-      if (inQuote) {
-        return i;
-      }
-    }
-    
-    return -1;
   }
 
   /**

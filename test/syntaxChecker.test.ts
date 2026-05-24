@@ -1,12 +1,22 @@
 import { expect } from 'chai';
-import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import {
+  buildSyntaxInitScript,
+  classifySyntaxSeverity,
+  extractErrorMessageAndLine,
+  resolveTargetLine,
+  selectPrimaryFrame,
+} from '../src/syntaxCheckerUtils';
 
 // Note: These tests require a mock vscode environment
 // For full integration tests, run in VS Code test environment
 
 describe('TCL Syntax Checker', () => {
+  const expectNearLine = (actual: number, expected: number) => {
+    expect(Math.abs(actual - expected)).to.be.lessThanOrEqual(1, `Expected ${actual} to be within ±1 of ${expected}`);
+  };
+
   describe('Error Detection Patterns', () => {
     it('should detect missing close brace pattern', () => {
       const content = `proc test {arg} {\n  puts "hello"\n  if {$arg > 0} {\n    puts "positive"`;
@@ -366,6 +376,163 @@ describe('TCL Syntax Checker', () => {
       const remoteResponse = { errors: [] };
       expect(remoteResponse.errors).to.be.an('array');
       expect(remoteResponse.errors).to.have.lengthOf(0);
+    });
+  });
+
+  describe('Real diagnostic mapping', () => {
+    it('maps explicit tclsh line references to 0-based diagnostics', () => {
+      const parsed = extractErrorMessageAndLine(
+        'ERROR: invalid command name "invalidCmd"\n    (file "test.tcl" line 3)',
+        4
+      );
+
+      const target = resolveTargetLine(parsed.message, parsed.fallbackLine, [
+        'set a 1',
+        'puts $a',
+        'invalidCmd',
+        'puts done',
+      ]);
+
+      expect(parsed.message.toLowerCase()).to.include('invalid command name');
+      expect(target).to.equal(2);
+      expect(parsed.frames).to.have.length.greaterThan(0);
+    });
+
+    it('uses specialized brace line detection when brace error text is reported', () => {
+      const lines = [
+        'proc test {} {\n' +
+        '  if {$x > 0} {\n' +
+        '    puts "x"\n' +
+        '  }\n',
+      ].join('').split('\n');
+
+      const parsed = extractErrorMessageAndLine(
+        'ERROR: missing close-brace\n    (file "test.tcl" line 99)',
+        lines.length
+      );
+      const target = resolveTargetLine(parsed.message, parsed.fallbackLine, lines);
+
+      expect(target).to.equal(1);
+    });
+
+    it('classifies missing variable reads as warning severity', () => {
+      const parsed = extractErrorMessageAndLine(
+        'ERROR: can\'t read "missingVar": no such variable\n    (file "test.tcl" line 1)',
+        1
+      );
+      const severity = classifySyntaxSeverity(parsed.message);
+
+      expect(severity).to.equal('warning');
+      expect(parsed.fallbackLine).to.equal(0);
+    });
+
+    it('extracts file frames for wrong # args errors', () => {
+      const parsed = extractErrorMessageAndLine(
+        'wrong # args: should be "proc name args body"\n    while executing\n"proc broken"\n    (file "/tmp/check.tcl" line 6)',
+        40
+      );
+
+      expect(parsed.message.toLowerCase()).to.include('wrong # args');
+      expect(parsed.frames).to.have.lengthOf(1);
+      expect(parsed.frames[0].filePath).to.equal('/tmp/check.tcl');
+      expect(parsed.frames[0].line).to.equal(5);
+      expect(parsed.fallbackLine).to.equal(5);
+    });
+
+    it('selects preferred frame when current temp file and sourced file are both present', () => {
+      const parsed = extractErrorMessageAndLine(
+        'wrong # args: should be "proc name args body"\n    (file "/workspace/lib/dependency.tcl" line 3)\n    (file "/tmp/vscode-tcl-check-1.tcl" line 8)',
+        30
+      );
+
+      const primary = selectPrimaryFrame(parsed.frames, ['/tmp/vscode-tcl-check-1.tcl']);
+      expect(primary).to.not.equal(undefined);
+      expect(primary?.filePath).to.equal('/tmp/vscode-tcl-check-1.tcl');
+      expect(primary?.line).to.equal(7);
+    });
+
+    it('matches preferred frame even with slash/case differences', () => {
+      const parsed = extractErrorMessageAndLine(
+        'wrong # args: should be "proc name args body"\n    (file "C:/Temp/VSCODE-TCL-CHECK-1.tcl" line 8)\n    (file "C:/workspace/dep.tcl" line 2)',
+        40
+      );
+
+      const primary = selectPrimaryFrame(parsed.frames, ['c:\\temp\\vscode-tcl-check-1.tcl']);
+      expect(primary).to.not.equal(undefined);
+      expect(primary?.filePath).to.equal('C:/Temp/VSCODE-TCL-CHECK-1.tcl');
+      expect(primary?.line).to.equal(7);
+    });
+
+    it('maps wrong-args fixture line using nearest-line tolerance', () => {
+      const fixturePath = path.join(__dirname, 'fixtures', 'syntax-errors', 'wrong-args.tcl');
+      const content = fs.readFileSync(fixturePath, 'utf8');
+      const lines = content.split(/\r?\n/);
+
+      const expectedLine = lines.findIndex(line => line.includes('[addTwo 10]'));
+      expect(expectedLine).to.be.greaterThan(-1);
+
+      const parsed = extractErrorMessageAndLine(
+        `wrong # args: should be "addTwo a b"\n    while executing\n"addTwo 10"\n    (file "/tmp/vscode-tcl-check-123.tcl" line ${expectedLine + 1})`,
+        lines.length
+      );
+      const mapped = resolveTargetLine(parsed.message, parsed.fallbackLine, lines);
+
+      expectNearLine(mapped, expectedLine);
+    });
+
+    it('extracts multiple frames from callstack text', () => {
+      const parsed = extractErrorMessageAndLine(
+        'invalid command name "badCall"\n    while executing\n"badCall"\n    (file "/tmp/current.tcl" line 4)\n    invoked from within\n"wrapper"\n    (file "/workspace/dep.tcl" line 12)',
+        50
+      );
+
+      expect(parsed.frames).to.have.lengthOf(2);
+      expect(parsed.frames[0].filePath).to.equal('/tmp/current.tcl');
+      expect(parsed.frames[0].line).to.equal(3);
+      expect(parsed.frames[1].filePath).to.equal('/workspace/dep.tcl');
+      expect(parsed.frames[1].line).to.equal(11);
+    });
+  });
+
+  describe('Import preloading init script', () => {
+    it('generates source guards for each file and normalizes slashes', () => {
+      const script = buildSyntaxInitScript([
+        'C:\\repo\\pkg\\a.tcl',
+        '/workspace/lib/b.tcl',
+      ]);
+
+      expect(script).to.include('source "C:/repo/pkg/a.tcl"');
+      expect(script).to.include('source "/workspace/lib/b.tcl"');
+      expect(script).to.include('Ignore errors during sourcing');
+      expect((script.match(/if \{\[catch \{source/g) || []).length).to.equal(2);
+    });
+
+    it('is deterministic for sorted input order', () => {
+      const files = ['/z/last.tcl', '/a/first.tcl', '/m/mid.tcl'].sort((a, b) => a.localeCompare(b));
+      const script = buildSyntaxInitScript(files);
+
+      const firstIndex = script.indexOf('/a/first.tcl');
+      const midIndex = script.indexOf('/m/mid.tcl');
+      const lastIndex = script.indexOf('/z/last.tcl');
+
+      expect(firstIndex).to.be.greaterThan(-1);
+      expect(midIndex).to.be.greaterThan(firstIndex);
+      expect(lastIndex).to.be.greaterThan(midIndex);
+    });
+
+    it('includes source-order fixtures in predictable order when sorted', () => {
+      const files = [
+        '/workspace/test/fixtures/syntax-errors/source-order-b.tcl',
+        '/workspace/test/fixtures/syntax-errors/source-order-a.tcl',
+      ].sort((a, b) => a.localeCompare(b));
+
+      const script = buildSyntaxInitScript(files);
+      const aIndex = script.indexOf('source "/workspace/test/fixtures/syntax-errors/source-order-a.tcl"');
+      const bIndex = script.indexOf('source "/workspace/test/fixtures/syntax-errors/source-order-b.tcl"');
+
+      expect(aIndex).to.be.greaterThan(-1);
+      expect(bIndex).to.be.greaterThan(-1);
+      expect(aIndex).to.be.lessThan(bIndex);
     });
   });
 });
