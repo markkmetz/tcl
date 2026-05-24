@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.7 (Pre-release)
+
+This pre-release includes the following updates:
+
+- Lightweight syntax checking stability improvements to prevent richer diagnostics from being overwritten by background scans.
+- False-positive reductions in lightweight parsing for Tcl comment boundaries, quote handling inside brace-quoted regions, and bracket/brace tracking.
+- Expanded regression coverage for recent false-positive fixes, including nearby true-positive checks.
+
 ## 1.4.6-pre.0
 
 This pre-release includes the following updates:
