@@ -699,11 +699,23 @@ export class TclIndexer {
     const sigs = this.getProcSignatures(normalized, document);
 
     const symbols = new Set<string>([normalized, short]);
+    // Collect which of the resolved symbols are TclOO methods so the reference
+    // scanner can apply the looser "$obj method" call-site detection for them.
+    const methodSymbolsSet = new Set<string>();
     for (const s of sigs) {
       const fq = (s.fqName || '').replace(/^::+/, '');
       if (!fq) continue;
       symbols.add(fq);
-      symbols.add(fq.split('::').pop() || fq);
+      const shortFq = fq.split('::').pop() || fq;
+      symbols.add(shortFq);
+    }
+    // Mark any symbol that appears in methodIndex as a method symbol
+    for (const sym of symbols) {
+      if (this.methodIndex.has(sym)) {
+        methodSymbolsSet.add(sym);
+        const shortSym = sym.split('::').pop() || sym;
+        methodSymbolsSet.add(shortSym);
+      }
     }
 
     const files = await vscode.workspace.findFiles('**/*.tcl');
@@ -714,7 +726,7 @@ export class TclIndexer {
       try {
         const doc = await vscode.workspace.openTextDocument(file);
         const lines = doc.getText().split(/\r?\n/);
-        const found = collectProcMethodReferences(lines, Array.from(symbols));
+        const found = collectProcMethodReferences(lines, Array.from(symbols), methodSymbolsSet.size ? methodSymbolsSet : undefined);
         for (const hit of found) {
           refs.push(new vscode.Location(file, new vscode.Position(hit.line, hit.character)));
         }
