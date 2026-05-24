@@ -3,7 +3,7 @@
   "publisher": "kmetzenterprises",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "1.4.5",
+  "version": "1.4.6-pre.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/markkmetz/tcl.git"
