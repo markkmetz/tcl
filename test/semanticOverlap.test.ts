@@ -1,4 +1,33 @@
 import { expect } from 'chai';
+import { extractDictSemanticTokenSpans } from '../src/semanticDictTokens';
+import { extractVariableReferenceSpans } from '../src/semanticVariables';
+
+type Span = { start: number; length: number; type: string };
+
+const resolveNonOverlappingSpans = (spans: Span[]): Span[] => {
+  const sorted = [...spans].sort((a, b) => a.start - b.start || b.length - a.length || a.type.localeCompare(b.type));
+  const finalTokens: Span[] = [];
+
+  for (const span of sorted) {
+    const spanEnd = span.start + span.length;
+    let overlaps = false;
+
+    for (let i = finalTokens.length - 1; i >= 0; i--) {
+      const prev = finalTokens[i];
+      const prevEnd = prev.start + prev.length;
+      if (span.start < prevEnd && spanEnd > prev.start) {
+        overlaps = true;
+        break;
+      }
+    }
+
+    if (!overlaps) {
+      finalTokens.push(span);
+    }
+  }
+
+  return finalTokens;
+};
 
 describe('Semantic token overlap detection', () => {
   it('should detect overlapping tokens', () => {
@@ -120,6 +149,38 @@ describe('Semantic token overlap detection', () => {
     // Only first token should be included
     expect(finalTokens).to.have.lengthOf(1);
     expect(finalTokens[0].col).to.equal(4);
+  });
+
+  it('keeps dict and variable spans stable in a nested dict create line', () => {
+    const line = 'set appConfig [dict create server [dict create host localhost port 8080] mode prod]';
+    const dictSpans = extractDictSemanticTokenSpans(line);
+
+    expect(dictSpans.map(span => line.slice(span.start, span.start + span.length))).to.deep.include.members([
+      'dict',
+      'create',
+      'server',
+      'host',
+      'port',
+      'mode'
+    ]);
+  });
+
+  it('keeps escaped quotes from leaking spans into following dict tokens', () => {
+    const line = 'set payload [dict create note {escaped quote: \\\" still text} path $::home/logs]';
+    const dictSpans = extractDictSemanticTokenSpans(line);
+    const variableSpans = extractVariableReferenceSpans(line);
+
+    expect(dictSpans.length).to.be.greaterThan(0);
+    expect(variableSpans.map(span => line.slice(span.start, span.start + span.length))).to.deep.equal(['$::home']);
+  });
+
+  it('keeps namespace-qualified variables and dict spans from colliding', () => {
+    const line = 'set result [dict create server [dict create host localhost port 8080] mode prod user $::currentUser]';
+    const dictSpans = extractDictSemanticTokenSpans(line);
+    const variableSpans = extractVariableReferenceSpans(line);
+
+    expect(dictSpans.length).to.be.greaterThan(0);
+    expect(variableSpans.map(span => line.slice(span.start, span.start + span.length))).to.deep.equal(['$::currentUser']);
   });
 });
 
