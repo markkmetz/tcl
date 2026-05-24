@@ -232,6 +232,19 @@ export function activate(context: vscode.ExtensionContext) {
       })
     );
 
+    // When a document is opened, run the appropriate syntax check immediately
+    context.subscriptions.push(
+      vscode.workspace.onDidOpenTextDocument(doc => {
+        if (doc.languageId !== 'tcl') return;
+        // Always run the lightweight parser immediately on open
+        syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
+        // If configured mode is not lightweight, also run the configured check
+        if (!useLightweight) {
+          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+        }
+      })
+    );
+
     context.subscriptions.push(
       vscode.workspace.onDidCloseTextDocument(doc => {
         if (doc.languageId === 'tcl') {

@@ -65,11 +65,14 @@ export class TclSyntaxChecker {
     }
     
     if (mode === 'local') {
-      this.log(`  Using local tclsh for syntax checking`);
-      return this.checkWithLocalTclsh(document);
+      this.log(`  Using local external checker for syntax checking (replacing prior local tclsh behavior)`);
+      return this.checkWithExternalScripts(document);
     } else if (mode === 'remote') {
       this.log(`  Using remote service for syntax checking`);
       return this.checkWithRemoteService(document);
+    } else if (mode === 'external') {
+      this.log(`  Using external script for syntax checking`);
+      return this.checkWithExternalScripts(document);
     }
     
     this.log(`  Unknown syntax check mode, returning no diagnostics`);
@@ -284,7 +287,8 @@ export class TclSyntaxChecker {
         }
       }
       
-      return { uri: document.uri, diagnostics };
+      const filtered = diagnostics.filter(d => !this.isDiagnosticSuppressed(document, d));
+      return { uri: document.uri, diagnostics: filtered };
       
     } catch (err: any) {
       const diagnostic = new vscode.Diagnostic(
@@ -295,6 +299,129 @@ export class TclSyntaxChecker {
       diagnostic.source = 'tcl-syntax';
       return { uri: document.uri, diagnostics: [diagnostic] };
     }
+  }
+
+  /**
+   * Check syntax using an external checker script/executable which can output JSON
+   */
+  private async checkWithExternalScripts(document: vscode.TextDocument): Promise<SyntaxCheckResult> {
+    const config = vscode.workspace.getConfiguration('tcl.runtime');
+    const cmd = config.get<string>('externalCheckerCmd', 'tcl-check');
+    const argsCfg = config.get<any>('externalCheckerArgs', ['--json']);
+
+    // Ensure args is an array
+    const baseArgs: string[] = Array.isArray(argsCfg) ? argsCfg.slice() : (typeof argsCfg === 'string' ? argsCfg.split(' ') : []);
+
+    const tempDir = os.tmpdir();
+    const timestamp = Date.now();
+    const tempFile = path.join(tempDir, `vscode-tcl-external-${timestamp}.tcl`);
+
+    try {
+      fs.writeFileSync(tempFile, document.getText(), 'utf8');
+    } catch (err: any) {
+      const diagnostic = new vscode.Diagnostic(
+        new vscode.Range(0, 0, 0, 0),
+        `Failed to write temp file for external checker: ${err.message}`,
+        vscode.DiagnosticSeverity.Error
+      );
+      diagnostic.source = 'tcl-syntax';
+      return { uri: document.uri, diagnostics: [diagnostic] };
+    }
+
+    const args = baseArgs.concat([tempFile]);
+
+    this.log(`Spawning external checker: ${cmd} ${args.join(' ')}`);
+
+    return new Promise((resolve) => {
+      const spawnOptions = {
+        cwd: path.dirname(document.fileName),
+        timeout: 10000,
+        maxBuffer: 10 * 1024 * 1024
+      } as any;
+
+      child_process.execFile(cmd, args, spawnOptions, (err, stdout, stderr) => {
+        try {
+          const stderrStr = stderr && typeof stderr !== 'string' ? stderr.toString() : (stderr || '');
+          if (stderrStr.length > 0) {
+            this.log(`External checker stderr: ${stderrStr.substring(0, 1000)}`);
+          }
+
+          const out = (stdout && typeof stdout !== 'string' ? stdout.toString() : (stdout || '')).trim();
+          if (!out) {
+            if (err) {
+              this.log(`External checker failed: ${err.message}`);
+              const diagnostic = new vscode.Diagnostic(
+                new vscode.Range(0, 0, 0, 0),
+                `External checker failed: ${err.message}`,
+                vscode.DiagnosticSeverity.Warning
+              );
+              diagnostic.source = 'tcl-syntax';
+              try { fs.unlinkSync(tempFile); } catch (e) { /* ignore */ }
+              resolve({ uri: document.uri, diagnostics: [diagnostic] });
+              return;
+            }
+            // No output and no error: no diagnostics
+            try { fs.unlinkSync(tempFile); } catch (e) { /* ignore */ }
+            resolve({ uri: document.uri, diagnostics: [] });
+            return;
+          }
+
+          let parsed: any;
+          try {
+            parsed = JSON.parse(out);
+          } catch (parseErr) {
+            const parseMsg = (parseErr && typeof parseErr === 'object' && 'message' in parseErr) ? (parseErr as any).message : String(parseErr);
+            this.log(`Failed to parse JSON from external checker: ${parseMsg}`);
+            const diagnostic = new vscode.Diagnostic(
+              new vscode.Range(0, 0, 0, 0),
+              `External checker returned non-JSON output: ${parseMsg}`,
+              vscode.DiagnosticSeverity.Warning
+            );
+            diagnostic.source = 'tcl-syntax';
+            try { fs.unlinkSync(tempFile); } catch (e) { /* ignore */ }
+            resolve({ uri: document.uri, diagnostics: [diagnostic] });
+            return;
+          }
+
+          const diagnostics: vscode.Diagnostic[] = [];
+          const errors = Array.isArray(parsed) ? parsed : (parsed.errors || parsed.results || []);
+
+          if (Array.isArray(errors)) {
+            for (const e of errors) {
+              const line = Math.max(0, (e.line || 1) - 1);
+              const range = new vscode.Range(line, 0, line, 1000);
+              const severity = e.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error;
+              const message = e.message || (typeof e === 'string' ? e : JSON.stringify(e));
+              const diag = new vscode.Diagnostic(range, message, severity);
+              diag.source = 'tcl-syntax';
+              diagnostics.push(diag);
+            }
+          } else {
+            // Unknown format: create a single diagnostic with raw output
+            const diag = new vscode.Diagnostic(
+              new vscode.Range(0, 0, 0, 0),
+              `External checker returned unexpected JSON format`,
+              vscode.DiagnosticSeverity.Warning
+            );
+            diag.source = 'tcl-syntax';
+            diagnostics.push(diag);
+          }
+
+          try { fs.unlinkSync(tempFile); } catch (e) { /* ignore */ }
+          const filtered = diagnostics.filter(d => !this.isDiagnosticSuppressed(document, d));
+          resolve({ uri: document.uri, diagnostics: filtered });
+        } catch (ex: any) {
+          try { fs.unlinkSync(tempFile); } catch (e) { /* ignore */ }
+          const diagnostic = new vscode.Diagnostic(
+            new vscode.Range(0, 0, 0, 0),
+            `External checker exception: ${ex.message}`,
+            vscode.DiagnosticSeverity.Error
+          );
+          diagnostic.source = 'tcl-syntax';
+          resolve({ uri: document.uri, diagnostics: [diagnostic] });
+        }
+      });
+    });
   }
 
   private async checkLightweightSyntax(document: vscode.TextDocument): Promise<SyntaxCheckResult> {
@@ -310,7 +437,7 @@ export class TclSyntaxChecker {
       );
       diagnostic.source = 'tcl-syntax';
       return diagnostic;
-    });
+    }).filter(d => !this.isDiagnosticSuppressed(document, d));
 
     return { uri: document.uri, diagnostics };
   }
@@ -443,8 +570,10 @@ export class TclSyntaxChecker {
       this.log(`  Created general error diagnostic: "${cleanError}"`);
     }
     
-    this.log(`  Returning ${diagnostics.length} diagnostic(s)`);
-    return diagnostics;
+    const beforeCount = diagnostics.length;
+    const filtered = diagnostics.filter(d => !this.isDiagnosticSuppressed(document, d));
+    this.log(`  Returning ${filtered.length} diagnostic(s) (filtered ${beforeCount - filtered.length})`);
+    return filtered;
   }
 
   /**
@@ -577,5 +706,38 @@ export class TclSyntaxChecker {
       req.write(postData);
       req.end();
     });
+  }
+
+  /**
+   * Determine if a diagnostic is suppressed by file- or line-level suppression comments.
+   * Supports:
+   *  - file-level: '# tcl-ignore-file' (anywhere in first 50 lines)
+   *  - line-level: '# tcl-ignore' appended on the same line or on the previous line
+   */
+  private isDiagnosticSuppressed(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): boolean {
+    try {
+      // File-level suppression: check first 50 lines
+      const headLines = Math.min(50, document.lineCount);
+      for (let i = 0; i < headLines; i++) {
+        const txt = document.lineAt(i).text;
+        if (/#\s*tcl-ignore-file\b/i.test(txt)) return true;
+      }
+
+      const line = Math.max(0, Math.min(diagnostic.range.start.line, document.lineCount - 1));
+
+      // Same-line suppression
+      const lineText = document.lineAt(line).text;
+      if (/#\s*tcl-ignore\b/i.test(lineText)) return true;
+
+      // Previous-line suppression (comment above the line)
+      if (line > 0) {
+        const prevText = document.lineAt(line - 1).text;
+        if (/#\s*tcl-ignore\b/i.test(prevText)) return true;
+      }
+
+      return false;
+    } catch (e) {
+      return false;
+    }
   }
 }

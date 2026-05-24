@@ -38,6 +38,22 @@ export class TclSyntaxCodeActionProvider implements vscode.CodeActionProvider {
           title: 'Show Tcl syntax troubleshooting tips'
         };
         actions.push(helpAction);
+        // Suppress this specific diagnostic for the line
+        const suppressLine = new vscode.CodeAction('Suppress this error (line)', vscode.CodeActionKind.QuickFix);
+        suppressLine.diagnostics = [diagnostic];
+        suppressLine.edit = new vscode.WorkspaceEdit();
+        const line = Math.max(0, Math.min(diagnostic.range.start.line, document.lineCount - 1));
+        const insertPos = document.lineAt(line).range.end;
+        // Append an inline suppression comment
+        suppressLine.edit.insert(document.uri, insertPos, '  # tcl-ignore');
+        actions.push(suppressLine);
+
+        // Suppress all diagnostics in this file
+        const suppressFile = new vscode.CodeAction('Suppress all errors in file', vscode.CodeActionKind.QuickFix);
+        suppressFile.diagnostics = [diagnostic];
+        suppressFile.edit = new vscode.WorkspaceEdit();
+        suppressFile.edit.insert(document.uri, new vscode.Position(0, 0), '# tcl-ignore-file\n');
+        actions.push(suppressFile);
       }
     }
 
