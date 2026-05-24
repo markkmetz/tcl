@@ -11,6 +11,12 @@ export interface ParsedSyntaxError {
   frames: SyntaxErrorFrame[];
 }
 
+export interface LightweightSyntaxIssue {
+  line: number;
+  message: string;
+  severity: SyntaxSeverity;
+}
+
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').toLowerCase();
 }
@@ -213,4 +219,37 @@ export function resolveTargetLine(message: string, fallbackLine: number, lines: 
   }
 
   return fallbackLine;
+}
+
+export function collectLightweightSyntaxIssues(lines: string[]): LightweightSyntaxIssue[] {
+  const issues: LightweightSyntaxIssue[] = [];
+
+  const braceLine = findBraceErrorLine(lines);
+  if (braceLine !== -1) {
+    issues.push({
+      line: braceLine,
+      message: 'Possible unmatched brace',
+      severity: 'error',
+    });
+  }
+
+  const bracketLine = findBracketErrorLine(lines);
+  if (bracketLine !== -1) {
+    issues.push({
+      line: bracketLine,
+      message: 'Possible unmatched bracket',
+      severity: 'error',
+    });
+  }
+
+  const quoteLine = findQuoteErrorLine(lines);
+  if (quoteLine !== -1) {
+    issues.push({
+      line: quoteLine,
+      message: 'Possible unclosed quote',
+      severity: 'error',
+    });
+  }
+
+  return issues;
 }

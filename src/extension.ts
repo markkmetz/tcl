@@ -202,10 +202,19 @@ export function activate(context: vscode.ExtensionContext) {
       const checkAllDocuments = () => {
         vscode.workspace.textDocuments.forEach(doc => {
           if (doc.languageId === 'tcl') {
-            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+            syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
           }
         });
       };
+
+      // Check on document change with the lightweight pairing scanner.
+      context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(event => {
+          if (event.document.languageId === 'tcl') {
+            syntaxChecker.scheduleLightweightCheck(event.document, syntaxDiagnostics!);
+          }
+        })
+      );
       
       // Check on document save only (immediately, no delay)
       context.subscriptions.push(

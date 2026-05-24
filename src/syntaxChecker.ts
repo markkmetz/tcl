@@ -7,6 +7,7 @@ import * as https from 'https';
 import * as http from 'http';
 import {
   buildSyntaxInitScript,
+  collectLightweightSyntaxIssues,
   classifySyntaxSeverity,
   extractErrorMessageAndLine,
   resolveTargetLine,
@@ -26,6 +27,7 @@ export interface SyntaxCheckStatus {
 
 export class TclSyntaxChecker {
   private checkTimeout: NodeJS.Timeout | undefined;
+  private lightweightCheckTimeout: NodeJS.Timeout | undefined;
   private readonly debounceMs: number = 500; // internal debounce before applying config delay
   private logChannel?: vscode.OutputChannel;
   private readonly _onDidStatus = new vscode.EventEmitter<SyntaxCheckStatus>();
@@ -295,6 +297,24 @@ export class TclSyntaxChecker {
     }
   }
 
+  private async checkLightweightSyntax(document: vscode.TextDocument): Promise<SyntaxCheckResult> {
+    const lines = document.getText().split(/\r?\n/);
+    const issues = collectLightweightSyntaxIssues(lines);
+    const diagnostics: vscode.Diagnostic[] = issues.map(issue => {
+      const line = Math.max(0, Math.min(issue.line, Math.max(0, document.lineCount - 1)));
+      const range = new vscode.Range(line, 0, line, 1000);
+      const diagnostic = new vscode.Diagnostic(
+        range,
+        issue.message,
+        issue.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error
+      );
+      diagnostic.source = 'tcl-syntax';
+      return diagnostic;
+    });
+
+    return { uri: document.uri, diagnostics };
+  }
+
   /**
    * Parse error output from tclsh and create diagnostics
    */
@@ -463,6 +483,34 @@ export class TclSyntaxChecker {
     }
   }
 
+  scheduleLightweightCheck(
+    document: vscode.TextDocument,
+    diagnosticCollection: vscode.DiagnosticCollection,
+    immediate: boolean = false
+  ): void {
+    if (this.lightweightCheckTimeout) {
+      clearTimeout(this.lightweightCheckTimeout);
+    }
+
+    const doCheck = async () => {
+      const fileName = document.fileName.split(/[\\/]/).pop() || document.fileName;
+      this.setStatus({ state: 'checking', fileName });
+      this.log(`Checking lightweight syntax: ${fileName}`);
+      const result = await this.checkLightweightSyntax(document);
+      diagnosticCollection.set(result.uri, result.diagnostics);
+      const errorCount = result.diagnostics.length;
+      const status = errorCount === 0 ? 'OK' : `${errorCount} issue(s)`;
+      this.log(`Lightweight syntax check complete: ${fileName} - ${status}`);
+      this.setStatus({ state: 'complete', fileName, errorCount });
+    };
+
+    if (immediate) {
+      doCheck();
+    } else {
+      this.lightweightCheckTimeout = setTimeout(doCheck, this.debounceMs);
+    }
+  }
+
   /**
    * Clear any pending check
    */
@@ -470,6 +518,10 @@ export class TclSyntaxChecker {
     if (this.checkTimeout) {
       clearTimeout(this.checkTimeout);
       this.checkTimeout = undefined;
+    }
+    if (this.lightweightCheckTimeout) {
+      clearTimeout(this.lightweightCheckTimeout);
+      this.lightweightCheckTimeout = undefined;
     }
   }
 

@@ -2,6 +2,7 @@ import { expect } from 'chai';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
+  collectLightweightSyntaxIssues,
   buildSyntaxInitScript,
   classifySyntaxSeverity,
   extractErrorMessageAndLine,
@@ -491,6 +492,22 @@ describe('TCL Syntax Checker', () => {
       expect(parsed.frames[0].line).to.equal(3);
       expect(parsed.frames[1].filePath).to.equal('/workspace/dep.tcl');
       expect(parsed.frames[1].line).to.equal(11);
+    });
+
+    it('collects lightweight pairing issues for braces, brackets, and quotes', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {arg} {',
+        '  set value [expr {$arg + 1}',
+        '  puts "unterminated',
+      ]);
+
+      expect(issues).to.have.lengthOf(3);
+      expect(issues.map(issue => issue.line)).to.deep.equal([1, 1, 2]);
+      expect(issues.map(issue => issue.message)).to.deep.equal([
+        'Possible unmatched brace',
+        'Possible unmatched bracket',
+        'Possible unclosed quote',
+      ]);
     });
   });
 
