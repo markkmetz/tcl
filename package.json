@@ -197,6 +197,14 @@
       {
         "command": "tcl.showIndexerLog",
         "title": "Tcl: Show Indexer Log"
+      },
+      {
+        "command": "tcl.startSyntaxScan",
+        "title": "Tcl: Start Workspace Syntax Scan"
+      },
+      {
+        "command": "tcl.cancelSyntaxScan",
+        "title": "Tcl: Cancel Workspace Syntax Scan"
       }
     ],
     "menus": {

@@ -30,6 +30,18 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(showIndexerLogCmd);
 
+  const startSyntaxScanCmd = vscode.commands.registerCommand('tcl.startSyntaxScan', () => {
+    if (syntaxDiagnostics) {
+      syntaxChecker.startBackgroundLightweightScan(syntaxDiagnostics);
+    }
+  });
+  context.subscriptions.push(startSyntaxScanCmd);
+
+  const cancelSyntaxScanCmd = vscode.commands.registerCommand('tcl.cancelSyntaxScan', () => {
+    syntaxChecker.cancelBackgroundLightweightScan();
+  });
+  context.subscriptions.push(cancelSyntaxScanCmd);
+
   const renderIndexerStatus = (status: TclIndexerStatus) => {
     if (status.state === 'indexing') {
       const progress = status.filesTotal
@@ -50,6 +62,18 @@ export function activate(context: vscode.ExtensionContext) {
 
   indexer.onDidLog(msg => indexerLogChannel.appendLine(msg), null, context.subscriptions);
   indexer.onDidStatus(renderIndexerStatus, null, context.subscriptions);
+  indexer.onDidStatus(status => {
+    if (
+      !syntaxBackgroundScanStarted &&
+      status.state === 'idle' &&
+      config().get<string>('tcl.runtime.syntaxCheckMode', 'lightweight') === 'lightweight'
+    ) {
+      syntaxBackgroundScanStarted = true;
+      if (syntaxDiagnostics) {
+        syntaxChecker.startBackgroundLightweightScan(syntaxDiagnostics);
+      }
+    }
+  }, null, context.subscriptions);
 
   indexer.activate(context);
 
@@ -59,6 +83,8 @@ export function activate(context: vscode.ExtensionContext) {
   syntaxStatusBar.text = '$(check) Syntax: idle';
   syntaxStatusBar.show();
   context.subscriptions.push(syntaxStatusBar);
+
+  let syntaxBackgroundScanStarted = false;
 
   // disposables for optional features
   let defDisposable: vscode.Disposable | undefined;
@@ -75,12 +101,45 @@ export function activate(context: vscode.ExtensionContext) {
   const syntaxChecker = new TclSyntaxChecker(indexer, indexerLogChannel);
 
   const renderSyntaxStatus = (status: SyntaxCheckStatus) => {
+    if (status.state === 'scanning') {
+      const progress = status.filesTotal
+        ? ` (${status.filesProcessed || 0}/${status.filesTotal})`
+        : '';
+      const cached = typeof status.cachedFiles === 'number' && status.cachedFiles > 0
+        ? `, ${status.cachedFiles} cached`
+        : '';
+      syntaxStatusBar.command = 'tcl.cancelSyntaxScan';
+      syntaxStatusBar.tooltip = 'Cancel workspace syntax scan';
+      syntaxStatusBar.text = `$(sync~spin) Syntax Scan${progress}${cached}`;
+      return;
+    }
+
+    if (status.state === 'cancelled') {
+      const progress = status.filesTotal
+        ? ` (${status.filesProcessed || 0}/${status.filesTotal})`
+        : '';
+      syntaxStatusBar.command = 'tcl.startSyntaxScan';
+      syntaxStatusBar.tooltip = 'Restart workspace syntax scan';
+      syntaxStatusBar.text = `$(circle-slash) Syntax Scan cancelled${progress}`;
+      return;
+    }
+
     if (status.state === 'checking') {
+      syntaxStatusBar.command = undefined;
+      syntaxStatusBar.tooltip = 'Syntax check status';
       syntaxStatusBar.text = `$(sync~spin) Syntax: checking ${status.fileName || ''}`;
       return;
     }
 
     if (status.state === 'complete') {
+      syntaxStatusBar.command = status.filesTotal ? 'tcl.startSyntaxScan' : undefined;
+      syntaxStatusBar.tooltip = status.filesTotal ? 'Start workspace syntax scan' : 'Syntax check status';
+      if (status.filesTotal) {
+        const progress = ` (${status.filesProcessed || 0}/${status.filesTotal})`;
+        const duration = typeof status.durationMs === 'number' ? ` in ${status.durationMs}ms` : '';
+        syntaxStatusBar.text = `$(check) Syntax Scan complete${progress}${duration}`;
+        return;
+      }
       if (status.errorCount === 0) {
         syntaxStatusBar.text = `$(check) Syntax: OK`;
       } else {
@@ -89,6 +148,8 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
+    syntaxStatusBar.command = 'tcl.startSyntaxScan';
+    syntaxStatusBar.tooltip = 'Start workspace syntax scan';
     syntaxStatusBar.text = '$(check) Syntax: idle';
   };
 

@@ -21,15 +21,37 @@ export interface SyntaxCheckResult {
 }
 
 export interface SyntaxCheckStatus {
-  state: 'idle' | 'checking' | 'complete';
+  state: 'idle' | 'checking' | 'complete' | 'scanning' | 'cancelled';
   fileName?: string;
   errorCount?: number;
+  filesProcessed?: number;
+  filesTotal?: number;
+  cachedFiles?: number;
+  durationMs?: number;
+  message?: string;
+}
+
+interface CachedLightweightDiagnostics {
+  mtimeMs: number;
+  size: number;
+  mode: 'full' | 'syntaxOnly';
+  diagnostics: Array<{
+    line: number;
+    message: string;
+    severity: vscode.DiagnosticSeverity;
+  }>;
 }
 
 export class TclSyntaxChecker {
   private checkTimeouts: Map<string, NodeJS.Timeout> = new Map();
   private lightweightCheckTimeouts: Map<string, NodeJS.Timeout> = new Map();
   private checkGeneration: Map<string, number> = new Map();
+  private lightweightDiagnosticsCache: Map<string, CachedLightweightDiagnostics> = new Map();
+  private lastEmittedDiagnosticCounts: Map<string, number> = new Map();
+  private backgroundScanTimeout: NodeJS.Timeout | undefined;
+  private backgroundScanGeneration = 0;
+  private backgroundScanCancelled = false;
+  private backgroundScanActive = false;
   private readonly debounceMs: number = 500; // internal debounce before applying config delay
   private logChannel?: vscode.OutputChannel;
   private indexer?: TclIndexer;
@@ -49,6 +71,127 @@ export class TclSyntaxChecker {
 
   private setStatus(status: SyntaxCheckStatus): void {
     this._onDidStatus.fire(status);
+  }
+
+  private buildLightweightDiagnosticsFromText(
+    text: string,
+    uri: vscode.Uri,
+    includeUsageAnalysis: boolean
+  ): vscode.Diagnostic[] {
+    const lines = text.split(/\r?\n/);
+    const issues = collectLightweightSyntaxIssues(lines, { includeUsageAnalysis });
+    return issues.map(issue => {
+      const line = Math.max(0, Math.min(issue.line, Math.max(0, lines.length - 1)));
+      const range = new vscode.Range(line, 0, line, 1000);
+      const diagnostic = new vscode.Diagnostic(
+        range,
+        issue.message,
+        issue.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error
+      );
+      diagnostic.source = 'tcl-syntax';
+      return diagnostic;
+    });
+  }
+
+  private cacheLightweightDiagnostics(
+    key: string,
+    stat: vscode.FileStat,
+    diagnostics: vscode.Diagnostic[],
+    mode: 'full' | 'syntaxOnly'
+  ): void {
+    this.lightweightDiagnosticsCache.set(key, {
+      mtimeMs: stat.mtime,
+      size: stat.size,
+      mode,
+      diagnostics: diagnostics.map(d => ({
+        line: d.range.start.line,
+        message: d.message,
+        severity: d.severity,
+      })),
+    });
+  }
+
+  private logDiagnosticDelta(
+    label: string,
+    key: string,
+    nextDiagnostics: vscode.Diagnostic[]
+  ): void {
+    const cached = this.lightweightDiagnosticsCache.get(key);
+    if (!cached) {
+      this.log(`${label}: no previous cached diagnostics`);
+      return;
+    }
+
+    const previousCount = cached.diagnostics.length;
+    const nextCount = nextDiagnostics.length;
+    const removed = Math.max(0, previousCount - nextCount);
+    const added = Math.max(0, nextCount - previousCount);
+
+    if (removed > 0) {
+      this.log(`${label}: removed ${removed} diagnostic(s) (from ${previousCount} to ${nextCount})`);
+    }
+
+    if (added > 0) {
+      this.log(`${label}: added ${added} diagnostic(s) (from ${previousCount} to ${nextCount})`);
+    }
+
+    if (removed === 0 && added === 0) {
+      this.log(`${label}: diagnostic count unchanged at ${nextCount}`);
+    }
+  }
+
+  private applyDiagnostics(
+    label: string,
+    key: string,
+    uri: vscode.Uri,
+    diagnosticCollection: vscode.DiagnosticCollection,
+    diagnostics: vscode.Diagnostic[]
+  ): void {
+    const previousCount = this.lastEmittedDiagnosticCounts.get(key);
+    const nextCount = diagnostics.length;
+
+    if (previousCount === undefined) {
+      this.log(`${label}: no previous emitted diagnostics; writing ${nextCount} diagnostic(s)`);
+    } else {
+      const removed = Math.max(0, previousCount - nextCount);
+      const added = Math.max(0, nextCount - previousCount);
+
+      if (removed > 0) {
+        this.log(`${label}: removed ${removed} diagnostic(s) (from ${previousCount} to ${nextCount})`);
+      }
+
+      if (added > 0) {
+        this.log(`${label}: added ${added} diagnostic(s) (from ${previousCount} to ${nextCount})`);
+      }
+
+      if (removed === 0 && added === 0) {
+        this.log(`${label}: diagnostic count unchanged at ${nextCount}`);
+      }
+    }
+
+    diagnosticCollection.set(uri, diagnostics);
+    this.lastEmittedDiagnosticCounts.set(key, nextCount);
+  }
+
+  private restoreCachedLightweightDiagnostics(
+    key: string,
+    expectedMode: 'full' | 'syntaxOnly'
+  ): vscode.Diagnostic[] | undefined {
+    const cached = this.lightweightDiagnosticsCache.get(key);
+    if (!cached || cached.mode !== expectedMode) {
+      return undefined;
+    }
+
+    return cached.diagnostics.map(entry => {
+      const line = Math.max(0, entry.line);
+      const diagnostic = new vscode.Diagnostic(
+        new vscode.Range(line, 0, line, 1000),
+        entry.message,
+        entry.severity
+      );
+      diagnostic.source = 'tcl-syntax';
+      return diagnostic;
+    });
   }
 
   /**
@@ -429,19 +572,7 @@ export class TclSyntaxChecker {
   }
 
   private async checkLightweightSyntax(document: vscode.TextDocument): Promise<SyntaxCheckResult> {
-    const lines = document.getText().split(/\r?\n/);
-    const issues = collectLightweightSyntaxIssues(lines);
-    let diagnostics: vscode.Diagnostic[] = issues.map(issue => {
-      const line = Math.max(0, Math.min(issue.line, Math.max(0, document.lineCount - 1)));
-      const range = new vscode.Range(line, 0, line, 1000);
-      const diagnostic = new vscode.Diagnostic(
-        range,
-        issue.message,
-        issue.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error
-      );
-      diagnostic.source = 'tcl-syntax';
-      return diagnostic;
-    });
+    let diagnostics = this.buildLightweightDiagnosticsFromText(document.getText(), document.uri, true);
 
     // If we have an indexer, consult it to avoid false unused-proc warnings
     const procMsgRe = /^Possible unused proc:\s*(.+)$/;
@@ -469,9 +600,18 @@ export class TclSyntaxChecker {
       }
     }
 
-    diagnostics = diagnostics.filter(d => !this.isDiagnosticSuppressed(document, d));
+    const filtered = diagnostics.filter(d => !this.isDiagnosticSuppressedFromLines(document.getText().split(/\r?\n/), d));
 
-    return { uri: document.uri, diagnostics };
+    this.logDiagnosticDelta(`Lightweight check for ${document.fileName}`, document.uri.toString(), filtered);
+
+    try {
+      const stat = await vscode.workspace.fs.stat(document.uri);
+      this.cacheLightweightDiagnostics(document.uri.toString(), stat, filtered, 'full');
+    } catch {
+      // ignore cache write failures for unsaved or inaccessible documents
+    }
+
+    return { uri: document.uri, diagnostics: filtered };
   }
 
   /**
@@ -638,7 +778,7 @@ export class TclSyntaxChecker {
         this.log(`Dropping stale full check results for ${fileName} (gen ${expectedGen} != current ${currentGen})`);
         return;
       }
-      diagnosticCollection.set(result.uri, result.diagnostics);
+      this.applyDiagnostics(`Full check for ${document.fileName}`, key, result.uri, diagnosticCollection, result.diagnostics);
       const errorCount = result.diagnostics.length;
       const status = errorCount === 0 ? 'OK' : `${errorCount} error(s)`;
       this.log(`Syntax check complete: ${fileName} - ${status}`);
@@ -680,7 +820,7 @@ export class TclSyntaxChecker {
         this.log(`Dropping lightweight results for ${fileName} due to newer full check (captured ${capturedGen} != current ${currentGen})`);
         return;
       }
-      diagnosticCollection.set(result.uri, result.diagnostics);
+      this.applyDiagnostics(`Lightweight check for ${document.fileName}`, key, result.uri, diagnosticCollection, result.diagnostics);
       const errorCount = result.diagnostics.length;
       const status = errorCount === 0 ? 'OK' : `${errorCount} issue(s)`;
       this.log(`Lightweight syntax check complete: ${fileName} - ${status}`);
@@ -718,6 +858,130 @@ export class TclSyntaxChecker {
     }
     this.lightweightCheckTimeouts.clear();
     this.checkGeneration.clear();
+  }
+
+  startBackgroundLightweightScan(diagnosticCollection: vscode.DiagnosticCollection): void {
+    if (this.backgroundScanActive) {
+      this.log('Background lightweight scan already active; skipping duplicate start');
+      return;
+    }
+
+    this.backgroundScanCancelled = false;
+    this.backgroundScanActive = true;
+    const scanGeneration = ++this.backgroundScanGeneration;
+    const startedAt = Date.now();
+
+    const run = async () => {
+      try {
+        const files = await vscode.workspace.findFiles('**/*.tcl');
+        const sortedFiles = files.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
+        const totalFiles = sortedFiles.length;
+        let processedFiles = 0;
+        let cachedFiles = 0;
+        const batchSize = 25;
+
+        this.log(`Starting background lightweight scan for ${totalFiles} file(s)`);
+        this.setStatus({
+          state: 'scanning',
+          message: 'Scanning workspace for syntax issues',
+          filesProcessed: 0,
+          filesTotal: totalFiles,
+          cachedFiles: 0,
+        });
+
+        for (let i = 0; i < sortedFiles.length; i += batchSize) {
+          if (this.backgroundScanCancelled || scanGeneration !== this.backgroundScanGeneration) {
+            this.log(`Background scan cancelled at file ${processedFiles}/${totalFiles}`);
+            this.setStatus({
+              state: 'cancelled',
+              message: 'Syntax scan cancelled',
+              filesProcessed: processedFiles,
+              filesTotal: totalFiles,
+              cachedFiles,
+              durationMs: Date.now() - startedAt,
+            });
+            return;
+          }
+
+          const batch = sortedFiles.slice(i, i + batchSize);
+          for (const uri of batch) {
+            if (this.backgroundScanCancelled || scanGeneration !== this.backgroundScanGeneration) break;
+
+            const key = uri.toString();
+            try {
+              const stat = await vscode.workspace.fs.stat(uri);
+              const cached = this.lightweightDiagnosticsCache.get(key);
+              if (cached && cached.mtimeMs === stat.mtime && cached.size === stat.size) {
+                const restored = this.restoreCachedLightweightDiagnostics(key, 'syntaxOnly');
+                if (restored) {
+                  this.applyDiagnostics(`Background restore for ${uri.fsPath}`, key, uri, diagnosticCollection, restored);
+                  cachedFiles++;
+                  processedFiles++;
+                  continue;
+                }
+              }
+
+              const raw = await vscode.workspace.fs.readFile(uri);
+              const text = new TextDecoder('utf-8').decode(raw);
+              const diagnostics = this.buildLightweightDiagnosticsFromText(text, uri, false)
+                .filter(d => !this.isDiagnosticSuppressedFromLines(text.split(/\r?\n/), d));
+
+              this.logDiagnosticDelta(`Background scan for ${uri.fsPath}`, key, diagnostics);
+              this.applyDiagnostics(`Background scan for ${uri.fsPath}`, key, uri, diagnosticCollection, diagnostics);
+              this.cacheLightweightDiagnostics(key, stat, diagnostics, 'syntaxOnly');
+              processedFiles++;
+            } catch (err: any) {
+              this.log(`Background scan failed for ${uri.fsPath}: ${err?.message || err}`);
+              processedFiles++;
+            }
+          }
+
+          this.setStatus({
+            state: 'scanning',
+            message: 'Scanning workspace for syntax issues',
+            filesProcessed: processedFiles,
+            filesTotal: totalFiles,
+            cachedFiles,
+          });
+
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        const durationMs = Date.now() - startedAt;
+        this.log(`Completed background lightweight scan: ${processedFiles}/${totalFiles} file(s) in ${durationMs}ms (cached ${cachedFiles})`);
+        this.setStatus({
+          state: 'complete',
+          message: 'Background syntax scan complete',
+          filesProcessed: processedFiles,
+          filesTotal: totalFiles,
+          cachedFiles,
+          durationMs,
+        });
+      } finally {
+        this.backgroundScanActive = false;
+      }
+    };
+
+    void run();
+  }
+
+  cancelBackgroundLightweightScan(): void {
+    if (!this.backgroundScanActive) {
+      this.log('No background lightweight scan is active');
+      return;
+    }
+
+    this.backgroundScanCancelled = true;
+    this.backgroundScanGeneration++;
+    if (this.backgroundScanTimeout) {
+      try { clearTimeout(this.backgroundScanTimeout); } catch { /* ignore */ }
+      this.backgroundScanTimeout = undefined;
+    }
+    this.setStatus({
+      state: 'cancelled',
+      message: 'Syntax scan cancelled',
+    });
+    this.log('Background lightweight scan cancelled by user');
   }
 
   /**
@@ -781,15 +1045,22 @@ export class TclSyntaxChecker {
    *  - line-level: '# tcl-ignore' appended on the same line or on the previous line
    */
   private isDiagnosticSuppressed(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): boolean {
+    return this.isDiagnosticSuppressedFromLines(
+      Array.from({ length: document.lineCount }, (_, index) => document.lineAt(index).text),
+      diagnostic
+    );
+  }
+
+  private isDiagnosticSuppressedFromLines(lines: string[], diagnostic: vscode.Diagnostic): boolean {
     try {
       // Determine diagnostic level string
       const diagLevel = (diagnostic && typeof diagnostic.severity === 'number' && diagnostic.severity === vscode.DiagnosticSeverity.Warning)
         ? 'warning' : 'error';
 
       // File-level suppression: check first 50 lines and respect level
-      const headLines = Math.min(50, document.lineCount);
+      const headLines = Math.min(50, lines.length);
       for (let i = 0; i < headLines; i++) {
-        const txt = document.lineAt(i).text;
+        const txt = lines[i];
         const m = txt.match(/#\s*tcl-ignore-file(?::(error|warning|all))?\b/i);
         if (m) {
           const token = (m[1] || 'all').toLowerCase();
@@ -797,10 +1068,10 @@ export class TclSyntaxChecker {
         }
       }
 
-      const line = Math.max(0, Math.min(diagnostic.range.start.line, document.lineCount - 1));
+      const line = Math.max(0, Math.min(diagnostic.range.start.line, Math.max(0, lines.length - 1)));
 
       // Same-line suppression
-      const lineText = document.lineAt(line).text;
+      const lineText = lines[line] || '';
       const ms = lineText.match(/#\s*tcl-ignore(?::(error|warning|all))?\b/i);
       if (ms) {
         const token = (ms[1] || 'all').toLowerCase();
@@ -809,7 +1080,7 @@ export class TclSyntaxChecker {
 
       // Previous-line suppression (comment above the line)
       if (line > 0) {
-        const prevText = document.lineAt(line - 1).text;
+        const prevText = lines[line - 1] || '';
         const mp = prevText.match(/#\s*tcl-ignore(?::(error|warning|all))?\b/i);
         if (mp) {
           const token = (mp[1] || 'all').toLowerCase();

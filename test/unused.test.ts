@@ -2,6 +2,18 @@ import { expect } from 'chai';
 import { collectLightweightSyntaxIssues } from '../src/syntaxCheckerUtils';
 
 describe('Unused variable and proc detection', () => {
+  it('skips unused heuristics when syntax-only mode is requested', () => {
+    const lines = [
+      'set foo 1',
+      'proc helper {x} { puts $x }',
+      'puts done',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines, { includeUsageAnalysis: false });
+    const unusedIssues = issues.filter(i => /Possible unused (variable|proc)/.test(i.message));
+    expect(unusedIssues).to.have.lengthOf(0);
+  });
+
   it('does not report unused when dynamic pattern is used', () => {
     const lines = [
       'set letter a',
