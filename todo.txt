@@ -1,0 +1,19 @@
+1.  having more than one proc with the same name inaccurately displays the tooltipp/hover of other procs with that name. so we need to be more context aware. of proc and variable names.
+    i'm thinking a type of hiarchy. first the current file, then any imports, then any in the workspace. probably should stop searching after a result is found. unless they are indexed.
+    i'm also open to just using the default rules/path that tcl would use if my logic doesn't make sense.
+
+2.  syntax checks:
+        a) turns out that the native tcl syntax check is not "safe" by default. we should probably warn the user. i'll be implementing a tcl script/library to do these checks and i'll likely 
+        include them in a future release. so we will just warn for now. keeping in mind that we may use a tcl script to do this later.
+        
+        b)we should also implement a basic paired closing bracket/quotes, braces, etc. check to make sure that it is syntactacly correct. sort of like a lightweight intellisense. if it is 
+        lightweight so we should run by default without saving the current document. we could probably just queue up all files one after the other in some sort of background service. but 
+        we need to make sure that it's actually not resource intensive.
+
+3.  methods as opposed to procs don't seem to properly count for some reasson on some files. the go-to and metadata is there, but the "used in x locations" is always 0 for some files.
+
+4.  i still have this weird bug where the colorizer mix-matches colors randomly. its either conflicting with another colorizer, its some sort of tokenizer race condition, or both? the
+    best way to handle this i think is to create a bunch of different scenarios to try to narrow down the root cause.
+
+5.  when you type a namespace and autocomplete, i'd like to make sure that it always prefixes with "::" sometimes it just overwrites it. so if i do ::namespacename (tab for proc) it will 
+    sometimes do namespacename::proc instead
