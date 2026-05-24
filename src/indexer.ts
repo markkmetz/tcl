@@ -381,12 +381,14 @@ export class TclIndexer {
     }
 
     const simple = normalized.split('::').pop() || normalized;
-    const entries: vscode.Location[] = [];
+    type ScoredLoc = { loc: vscode.Location; priority: number };
+    const scored: ScoredLoc[] = [];
 
     // gather matching proc/method entries and filter by context
     const parr = this.procIndex.get(simple) || [];
     const marr = this.methodIndex.get(simple) || [];
 
+    const docKey = document?.uri.toString();
     let fileInfo = document ? this.fileImports.get(document.uri.toString()) : undefined;
 
     const includeEntry = (entry: { normalizedFqName: string; namespace?: string }) => {
@@ -399,16 +401,27 @@ export class TclIndexer {
       return false;
     };
 
-    for (const p of parr) if (includeEntry(p)) entries.push(p.loc);
-    for (const m of marr) if (includeEntry(m)) entries.push(m.loc);
+    // Priority: 0 = current file, 1 = imported/same namespace, 2 = workspace
+    const entryPriority = (entry: { normalizedFqName: string; namespace?: string; loc: vscode.Location }) => {
+      if (docKey && entry.loc.uri.toString() === docKey) return 0;
+      if (!fileInfo) return 2;
+      if (entry.namespace && fileInfo.fileNamespaces && fileInfo.fileNamespaces.has(entry.namespace)) return 1;
+      if (fileInfo.importedProcs.has(entry.normalizedFqName)) return 1;
+      if (entry.namespace && fileInfo.importedNamespaces.has(entry.namespace)) return 1;
+      return 2;
+    };
+
+    for (const p of parr) if (includeEntry(p)) scored.push({ loc: p.loc, priority: entryPriority(p) });
+    for (const m of marr) if (includeEntry(m)) scored.push({ loc: m.loc, priority: entryPriority(m) });
 
     // fallback to general index entries (simple name or fq)
-    if (!entries.length) {
+    if (!scored.length) {
       const exact = this.index.get(simple) || [];
-      entries.push(...exact);
+      for (const loc of exact) scored.push({ loc, priority: 2 });
     }
 
-    return entries;
+    scored.sort((a, b) => a.priority - b.priority);
+    return scored.map(s => s.loc);
   }
 
   async lookupVariable(name: string): Promise<{ loc: vscode.Location; value: string }[]> {
@@ -590,7 +603,8 @@ export class TclIndexer {
   }
 
   getProcSignatures(name: string, document?: vscode.TextDocument): Array<{ params: string[]; loc: vscode.Location; fqName: string }> {
-    const results: Array<{ params: string[]; loc: vscode.Location; fqName: string }> = [];
+    type ScoredSig = { params: string[]; loc: vscode.Location; fqName: string; priority: number };
+    const scored: ScoredSig[] = [];
     // normalize input (strip leading ::)
     const normalizedName = name.replace(/^::+/, '');
     // if fq name requested
@@ -598,16 +612,18 @@ export class TclIndexer {
       const simple = normalizedName.split('::').pop() || normalizedName;
       const parr = this.procIndex.get(simple) || [];
       for (const p of parr) {
-        if (p.normalizedFqName.toLowerCase() === normalizedName.toLowerCase()) results.push({ params: p.params, loc: p.loc, fqName: p.normalizedFqName });
+        if (p.normalizedFqName.toLowerCase() === normalizedName.toLowerCase()) scored.push({ params: p.params, loc: p.loc, fqName: p.normalizedFqName, priority: 2 });
       }
       const marr = this.methodIndex.get(simple) || [];
       for (const m of marr) {
-        if (m.normalizedFqName.toLowerCase() === normalizedName.toLowerCase()) results.push({ params: m.params, loc: m.loc, fqName: m.normalizedFqName });
+        if (m.normalizedFqName.toLowerCase() === normalizedName.toLowerCase()) scored.push({ params: m.params, loc: m.loc, fqName: m.normalizedFqName, priority: 2 });
       }
-      return results;
+      scored.sort((a, b) => a.priority - b.priority);
+      return scored.map(({ priority: _, ...rest }) => rest);
     }
 
     // otherwise filter by document context
+    const docKey = document?.uri.toString();
     let fileInfo: { fileNamespaces: Set<string>; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
     if (document) fileInfo = this.fileImports.get(document.uri.toString());
 
@@ -620,12 +636,23 @@ export class TclIndexer {
       return false;
     };
 
+    // Priority: 0 = current file, 1 = imported/same namespace, 2 = workspace
+    const entryPriority = (entry: { normalizedFqName: string; namespace?: string; loc: vscode.Location }) => {
+      if (docKey && entry.loc.uri.toString() === docKey) return 0;
+      if (!fileInfo) return 2;
+      if (entry.namespace && fileInfo.fileNamespaces && fileInfo.fileNamespaces.has(entry.namespace || '')) return 1;
+      if (fileInfo.importedProcs.has(entry.normalizedFqName)) return 1;
+      if (entry.namespace && fileInfo.importedNamespaces.has(entry.namespace)) return 1;
+      return 2;
+    };
+
     const simple = name.split('::').pop() || name;
     const parr = this.procIndex.get(simple) || [];
-    for (const p of parr) if (includeEntry(p)) results.push({ params: p.params, loc: p.loc, fqName: p.normalizedFqName });
+    for (const p of parr) if (includeEntry(p)) scored.push({ params: p.params, loc: p.loc, fqName: p.normalizedFqName, priority: entryPriority(p) });
     const marr = this.methodIndex.get(simple) || [];
-    for (const m of marr) if (includeEntry(m)) results.push({ params: m.params, loc: m.loc, fqName: m.normalizedFqName });
-    return results;
+    for (const m of marr) if (includeEntry(m)) scored.push({ params: m.params, loc: m.loc, fqName: m.normalizedFqName, priority: entryPriority(m) });
+    scored.sort((a, b) => a.priority - b.priority);
+    return scored.map(({ priority: _, ...rest }) => rest);
   }
 
   getDictKeys(varName: string): string[] {
