@@ -38,6 +38,13 @@ export function buildSyntaxInitScript(sourceFiles: string[]): string {
 export function findBraceErrorLine(lines: string[]): number {
   let depth = 0;
   let lastOpenLine = -1;
+  let inQuote = false;
+
+  const isEscaped = (line: string, idx: number) => {
+    let c = 0;
+    for (let k = idx - 1; k >= 0 && line[k] === '\\'; k--) c++;
+    return (c % 2) === 1;
+  };
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -45,14 +52,16 @@ export function findBraceErrorLine(lines: string[]): number {
     for (let j = 0; j < line.length; j++) {
       const ch = line[j];
 
-      // Skip simple quoted spans in a single line
-      if (ch === '"') {
-        const closeQuote = line.indexOf('"', j + 1);
-        if (closeQuote !== -1) {
-          j = closeQuote;
-          continue;
-        }
+      // Comments: if '#' and not inside quote, rest of line is comment
+      if (ch === '#' && !inQuote) break;
+
+      // Handle quote toggling (respecting escapes)
+      if (ch === '"' && !isEscaped(line, j)) {
+        inQuote = !inQuote;
+        continue;
       }
+
+      if (inQuote) continue;
 
       if (ch === '{') {
         depth++;
@@ -76,6 +85,13 @@ export function findBraceErrorLine(lines: string[]): number {
 export function findBracketErrorLine(lines: string[]): number {
   let depth = 0;
   let lastOpenLine = -1;
+  let inQuote = false;
+
+  const isEscaped = (line: string, idx: number) => {
+    let c = 0;
+    for (let k = idx - 1; k >= 0 && line[k] === '\\'; k--) c++;
+    return (c % 2) === 1;
+  };
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -83,14 +99,18 @@ export function findBracketErrorLine(lines: string[]): number {
     for (let j = 0; j < line.length; j++) {
       const ch = line[j];
 
-      // Skip simple quoted spans in a single line
-      if (ch === '"') {
-        const closeQuote = line.indexOf('"', j + 1);
-        if (closeQuote !== -1) {
-          j = closeQuote;
-          continue;
-        }
+      // Comments: if '#' and not inside quote, rest of line is comment
+      if (ch === '#' && !inQuote) break;
+
+      // Handle quote toggling (respecting escapes)
+      if (ch === '"' && !isEscaped(line, j)) {
+        inQuote = !inQuote;
+        continue;
       }
+
+      if (inQuote) continue;
+
+
 
       if (ch === '[') {
         depth++;

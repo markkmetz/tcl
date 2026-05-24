@@ -724,8 +724,10 @@ export class TclIndexer {
 
     for (const file of files) {
       try {
-        const doc = await vscode.workspace.openTextDocument(file);
-        const lines = doc.getText().split(/\r?\n/);
+        // Use workspace.fs.readFile to avoid opening documents (which would fire open events)
+        const bytes = await vscode.workspace.fs.readFile(file);
+        const text = Buffer.from(bytes).toString('utf8');
+        const lines = text.split(/\r?\n/);
         const found = collectProcMethodReferences(lines, Array.from(symbols), methodSymbolsSet.size ? methodSymbolsSet : undefined);
         for (const hit of found) {
           refs.push(new vscode.Location(file, new vscode.Position(hit.line, hit.character)));

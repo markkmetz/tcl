@@ -27,8 +27,9 @@ export interface SyntaxCheckStatus {
 }
 
 export class TclSyntaxChecker {
-  private checkTimeout: NodeJS.Timeout | undefined;
-  private lightweightCheckTimeout: NodeJS.Timeout | undefined;
+  private checkTimeouts: Map<string, NodeJS.Timeout> = new Map();
+  private lightweightCheckTimeouts: Map<string, NodeJS.Timeout> = new Map();
+  private checkGeneration: Map<string, number> = new Map();
   private readonly debounceMs: number = 500; // internal debounce before applying config delay
   private logChannel?: vscode.OutputChannel;
   private indexer?: TclIndexer;
@@ -615,31 +616,45 @@ export class TclSyntaxChecker {
     diagnosticCollection: vscode.DiagnosticCollection,
     immediate: boolean = false
   ): void {
-    if (this.checkTimeout) {
-      clearTimeout(this.checkTimeout);
+    const key = document.uri.toString();
+    if (this.checkTimeouts.has(key)) {
+      clearTimeout(this.checkTimeouts.get(key)!);
+      this.checkTimeouts.delete(key);
     }
     
+    // Determine generation for this scheduled/full check so we can ignore stale results
+    const gen = (this.checkGeneration.get(key) || 0) + 1;
+    this.checkGeneration.set(key, gen);
+
+    const expectedGen = gen;
     const doCheck = async () => {
-      const fileName = document.fileName.split(/[\\/]/).pop() || document.fileName;
+      const fileName = document.fileName.split(/[\/]/).pop() || document.fileName;
       this.setStatus({ state: 'checking', fileName });
       this.log(`Checking syntax: ${fileName}`);
       const result = await this.checkSyntax(document);
+      // If another check was scheduled after this one, drop these results as stale
+      const currentGen = this.checkGeneration.get(key) || 0;
+      if (currentGen !== expectedGen) {
+        this.log(`Dropping stale full check results for ${fileName} (gen ${expectedGen} != current ${currentGen})`);
+        return;
+      }
       diagnosticCollection.set(result.uri, result.diagnostics);
       const errorCount = result.diagnostics.length;
       const status = errorCount === 0 ? 'OK' : `${errorCount} error(s)`;
       this.log(`Syntax check complete: ${fileName} - ${status}`);
       this.setStatus({ state: 'complete', fileName, errorCount });
     };
-    
+
     if (immediate) {
       // On save: check immediately
       doCheck();
     } else {
-      // On change: debounce (though we're not using this anymore)
+      // On change: debounce
       const config = vscode.workspace.getConfiguration('tcl.runtime');
       const delaySeconds = config.get<number>('syntaxCheckDelay', 10);
       const delayMs = Math.max(1000, delaySeconds * 1000);
-      this.checkTimeout = setTimeout(doCheck, this.debounceMs + delayMs);
+      const to = setTimeout(doCheck, this.debounceMs + delayMs);
+      this.checkTimeouts.set(key, to);
     }
   }
 
@@ -648,15 +663,23 @@ export class TclSyntaxChecker {
     diagnosticCollection: vscode.DiagnosticCollection,
     immediate: boolean = false
   ): void {
-    if (this.lightweightCheckTimeout) {
-      clearTimeout(this.lightweightCheckTimeout);
+    const key = document.uri.toString();
+    if (this.lightweightCheckTimeouts.has(key)) {
+      clearTimeout(this.lightweightCheckTimeouts.get(key)!);
+      this.lightweightCheckTimeouts.delete(key);
     }
 
     const doCheck = async () => {
-      const fileName = document.fileName.split(/[\\/]/).pop() || document.fileName;
+      const fileName = document.fileName.split(/[\/]/).pop() || document.fileName;
       this.setStatus({ state: 'checking', fileName });
       this.log(`Checking lightweight syntax: ${fileName}`);
       const result = await this.checkLightweightSyntax(document);
+      // Only apply lightweight results if no newer full check was scheduled
+      const currentGen = this.checkGeneration.get(key) || 0;
+      if (currentGen !== capturedGen) {
+        this.log(`Dropping lightweight results for ${fileName} due to newer full check (captured ${capturedGen} != current ${currentGen})`);
+        return;
+      }
       diagnosticCollection.set(result.uri, result.diagnostics);
       const errorCount = result.diagnostics.length;
       const status = errorCount === 0 ? 'OK' : `${errorCount} issue(s)`;
@@ -664,10 +687,21 @@ export class TclSyntaxChecker {
       this.setStatus({ state: 'complete', fileName, errorCount });
     };
 
+    // capture current generation so we don't overwrite a later full check
+    const capturedGen = this.checkGeneration.get(key) || 0;
     if (immediate) {
       doCheck();
     } else {
-      this.lightweightCheckTimeout = setTimeout(doCheck, this.debounceMs);
+      const to = setTimeout(async () => {
+        // Re-check generation before running lightweight check
+        const currentGen = this.checkGeneration.get(key) || 0;
+        if (currentGen !== capturedGen) {
+          this.log(`Skipping lightweight check for ${document.fileName} due to newer full check scheduled`);
+          return;
+        }
+        await doCheck();
+      }, this.debounceMs);
+      this.lightweightCheckTimeouts.set(key, to);
     }
   }
 
@@ -675,14 +709,15 @@ export class TclSyntaxChecker {
    * Clear any pending check
    */
   clearScheduledCheck(): void {
-    if (this.checkTimeout) {
-      clearTimeout(this.checkTimeout);
-      this.checkTimeout = undefined;
+    for (const [k, to] of this.checkTimeouts.entries()) {
+      try { clearTimeout(to); } catch { /* ignore */ }
     }
-    if (this.lightweightCheckTimeout) {
-      clearTimeout(this.lightweightCheckTimeout);
-      this.lightweightCheckTimeout = undefined;
+    this.checkTimeouts.clear();
+    for (const [k, to] of this.lightweightCheckTimeouts.entries()) {
+      try { clearTimeout(to); } catch { /* ignore */ }
     }
+    this.lightweightCheckTimeouts.clear();
+    this.checkGeneration.clear();
   }
 
   /**
