@@ -13,6 +13,7 @@ import {
   resolveTargetLine,
   selectPrimaryFrame,
 } from './syntaxCheckerUtils';
+import { TclIndexer } from './indexer';
 
 export interface SyntaxCheckResult {
   uri: vscode.Uri;
@@ -30,10 +31,12 @@ export class TclSyntaxChecker {
   private lightweightCheckTimeout: NodeJS.Timeout | undefined;
   private readonly debounceMs: number = 500; // internal debounce before applying config delay
   private logChannel?: vscode.OutputChannel;
+  private indexer?: TclIndexer;
   private readonly _onDidStatus = new vscode.EventEmitter<SyntaxCheckStatus>();
   public readonly onDidStatus = this._onDidStatus.event;
   
-  constructor(logChannel?: vscode.OutputChannel) {
+  constructor(indexer?: TclIndexer, logChannel?: vscode.OutputChannel) {
+    this.indexer = indexer;
     this.logChannel = logChannel;
   }
 
@@ -427,7 +430,7 @@ export class TclSyntaxChecker {
   private async checkLightweightSyntax(document: vscode.TextDocument): Promise<SyntaxCheckResult> {
     const lines = document.getText().split(/\r?\n/);
     const issues = collectLightweightSyntaxIssues(lines);
-    const diagnostics: vscode.Diagnostic[] = issues.map(issue => {
+    let diagnostics: vscode.Diagnostic[] = issues.map(issue => {
       const line = Math.max(0, Math.min(issue.line, Math.max(0, document.lineCount - 1)));
       const range = new vscode.Range(line, 0, line, 1000);
       const diagnostic = new vscode.Diagnostic(
@@ -437,7 +440,35 @@ export class TclSyntaxChecker {
       );
       diagnostic.source = 'tcl-syntax';
       return diagnostic;
-    }).filter(d => !this.isDiagnosticSuppressed(document, d));
+    });
+
+    // If we have an indexer, consult it to avoid false unused-proc warnings
+    const procMsgRe = /^Possible unused proc:\s*(.+)$/;
+    if (this.indexer) {
+      const procDiags = diagnostics.filter(d => procMsgRe.test(d.message));
+      if (procDiags.length) {
+        const kept: vscode.Diagnostic[] = [];
+        for (const pd of procDiags) {
+          const m = pd.message.match(procMsgRe);
+          const name = m ? m[1] : '';
+          let used = false;
+          try {
+            // find references across the workspace respecting imports/namespaces
+            const refs = await this.indexer.findProcMethodReferences(name, document);
+            if (refs && refs.length > 0) used = true;
+          } catch (e) {
+            // if indexer fails, conservatively keep the warning
+            used = false;
+          }
+          if (!used) kept.push(pd);
+        }
+
+        // Rebuild diagnostics: keep non-proc diagnostics + kept proc diagnostics
+        diagnostics = diagnostics.filter(d => !procMsgRe.test(d.message)).concat(kept);
+      }
+    }
+
+    diagnostics = diagnostics.filter(d => !this.isDiagnosticSuppressed(document, d));
 
     return { uri: document.uri, diagnostics };
   }

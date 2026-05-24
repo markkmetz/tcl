@@ -72,7 +72,7 @@ export function activate(context: vscode.ExtensionContext) {
   let syntaxDiagnostics: vscode.DiagnosticCollection | undefined;
 
   // syntax checker
-  const syntaxChecker = new TclSyntaxChecker(indexerLogChannel);
+  const syntaxChecker = new TclSyntaxChecker(indexer, indexerLogChannel);
 
   const renderSyntaxStatus = (status: SyntaxCheckStatus) => {
     if (status.state === 'checking') {
