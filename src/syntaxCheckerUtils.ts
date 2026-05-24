@@ -132,22 +132,38 @@ export function findBracketErrorLine(lines: string[]): number {
 }
 
 export function findQuoteErrorLine(lines: string[]): number {
+  let inQuote = false;
+  let quoteStartLine = -1;
+
+  const isEscaped = (line: string, idx: number) => {
+    let c = 0;
+    for (let k = idx - 1; k >= 0 && line[k] === '\\'; k--) c++;
+    return (c % 2) === 1;
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    let inQuote = false;
 
     for (let j = 0; j < line.length; j++) {
-      if (line[j] === '"') {
-        inQuote = !inQuote;
-      }
-    }
+      const ch = line[j];
 
-    if (inQuote) {
-      return i;
+      // Comments only matter when we're not already inside a quoted string.
+      if (ch === '#' && !inQuote) {
+        break;
+      }
+
+      if (ch === '"' && !isEscaped(line, j)) {
+        inQuote = !inQuote;
+        if (inQuote && quoteStartLine === -1) {
+          quoteStartLine = i;
+        } else if (!inQuote) {
+          quoteStartLine = -1;
+        }
+      }
     }
   }
 
-  return -1;
+  return inQuote ? (quoteStartLine === -1 ? 0 : quoteStartLine) : -1;
 }
 
 export function classifySyntaxSeverity(message: string): SyntaxSeverity {

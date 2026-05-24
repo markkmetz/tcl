@@ -517,6 +517,39 @@ describe('TCL Syntax Checker', () => {
         'Possible unclosed quote',
       ]);
     });
+
+    it('does not flag a multiline quoted string as an unclosed quote', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set message "first line',
+        'second line"',
+        'puts $message',
+      ]);
+
+      const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
+      expect(quoteIssues).to.have.lengthOf(0);
+    });
+
+    it('ignores quote markers inside comments when detecting unclosed quotes', () => {
+      const issues = collectLightweightSyntaxIssues([
+        '# this is a comment with "quoted text" that should be ignored',
+        'proc test {} {',
+        '  puts done',
+        '}',
+      ]);
+
+      const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
+      expect(quoteIssues).to.have.lengthOf(0);
+    });
+
+    it('does not flag escaped quotes inside a string as an unclosed quote', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set message "He said \"hello\" and left"',
+        'puts $message',
+      ]);
+
+      const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
+      expect(quoteIssues).to.have.lengthOf(0);
+    });
   });
 
   describe('Import preloading init script', () => {
