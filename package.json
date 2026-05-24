@@ -3,7 +3,7 @@
   "publisher": "kmetzenterprises",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "repository": {
     "type": "git",
     "url": "https://github.com/markkmetz/tcl.git"
@@ -207,7 +207,8 @@
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "pretest": "npm run compile",
-    "test": "mocha -r ts-node/register 'test/**/*.test.ts'",
+    "test": "mocha -r ts-node/register 'test/*.test.ts'",
+    "test:integration": "npm run compile && tsc -p tsconfig.integration.json && node out/test/runTests.js",
     "build": "npm run compile && npm run package",
     "package": "npm version patch --no-git-tag-version && vsce package"
   },

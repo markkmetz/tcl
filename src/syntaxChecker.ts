@@ -47,16 +47,23 @@ export class TclSyntaxChecker {
     const config = vscode.workspace.getConfiguration('tcl.runtime');
     const mode = config.get<string>('syntaxCheckMode', 'local');
     
+    this.log(`checkSyntax called for: ${document.fileName}`);
+    this.log(`  Syntax check mode: ${mode}`);
+    
     if (mode === 'disabled') {
+      this.log(`  Syntax checking is disabled, returning no diagnostics`);
       return { uri: document.uri, diagnostics: [] };
     }
     
     if (mode === 'local') {
+      this.log(`  Using local tclsh for syntax checking`);
       return this.checkWithLocalTclsh(document);
     } else if (mode === 'remote') {
+      this.log(`  Using remote service for syntax checking`);
       return this.checkWithRemoteService(document);
     }
     
+    this.log(`  Unknown syntax check mode, returning no diagnostics`);
     return { uri: document.uri, diagnostics: [] };
   }
 
@@ -66,6 +73,14 @@ export class TclSyntaxChecker {
   private async checkWithLocalTclsh(document: vscode.TextDocument): Promise<SyntaxCheckResult> {
     const config = vscode.workspace.getConfiguration('tcl.runtime');
     const tclshPath = config.get<string>('tclshPath', 'tclsh');
+    const fileName = document.fileName.split(/[\\/]/).pop() || document.fileName;
+    
+    this.log(`Starting syntax check for: ${fileName}`);
+    this.log(`  Document URI: ${document.uri.toString()}`);
+    this.log(`  Document file path: ${document.fileName}`);
+    this.log(`  tclsh path setting: ${tclshPath}`);
+    this.log(`  OS platform: ${process.platform}`);
+    this.log(`  OS temp dir: ${os.tmpdir()}`);
     
     return new Promise(async (resolve) => {
       const tempDir = os.tmpdir();
@@ -74,15 +89,26 @@ export class TclSyntaxChecker {
       const initFile = path.join(tempDir, `vscode-tcl-init-${timestamp}.tcl`);
       const wrapperFile = path.join(tempDir, `vscode-tcl-wrapper-${timestamp}.tcl`);
       
+      this.log(`  Temp files:`);
+      this.log(`    - tempFile: ${tempFile}`);
+      this.log(`    - initFile: ${initFile}`);
+      this.log(`    - wrapperFile: ${wrapperFile}`);
+      
       try {
         // Write the document content that we want to check
+        this.log(`  Writing document content to tempFile (${document.getText().length} bytes)`);
         fs.writeFileSync(tempFile, document.getText(), 'utf8');
+        this.log(`  Successfully wrote tempFile`);
         
         // Find all TCL files in workspace to source before checking
+        this.log(`  Finding all TCL files in workspace...`);
         const allFiles = await vscode.workspace.findFiles('**/*.tcl');
+        this.log(`  Found ${allFiles.length} total TCL files in workspace`);
+        
         const sourceFiles = allFiles
           .filter(file => file.toString() !== document.uri.toString()) // Exclude the file being checked
           .map(file => file.fsPath);
+        this.log(`  Will source ${sourceFiles.length} files (excluding current document)`);
         
         // Create initialization script that sources all project files
         let initScript = '# Auto-generated initialization script\n';
@@ -94,7 +120,9 @@ export class TclSyntaxChecker {
           initScript += `  # Ignore errors during sourcing (file may have syntax errors)\n`;
           initScript += `}\n`;
         }
+        this.log(`  Writing init script to initFile (${initScript.length} bytes)`);
         fs.writeFileSync(initFile, initScript, 'utf8');
+        this.log(`  Successfully wrote initFile`);
         
         // Create wrapper script that sources init, then the document
         let wrapperScript = `try {\n`;
@@ -104,27 +132,46 @@ export class TclSyntaxChecker {
         wrapperScript += `  puts stderr $err\n`;
         wrapperScript += `  exit 1\n`;
         wrapperScript += `}\n`;
+        this.log(`  Writing wrapper script to wrapperFile (${wrapperScript.length} bytes)`);
+        this.log(`  Wrapper script content:\n${wrapperScript}`);
         fs.writeFileSync(wrapperFile, wrapperScript, 'utf8');
+        this.log(`  Successfully wrote wrapperFile`);
         
         // Run tclsh with the wrapper script
-        const proc = child_process.spawn(tclshPath, [wrapperFile], {
+        const spawnOptions = {
           cwd: path.dirname(document.fileName),
           timeout: 5000
-        });
+        };
+        this.log(`  Spawning tclsh process:`);
+        this.log(`    - Command: ${tclshPath}`);
+        this.log(`    - Args: [${wrapperFile}]`);
+        this.log(`    - CWD: ${spawnOptions.cwd}`);
+        this.log(`    - Timeout: ${spawnOptions.timeout}ms`);
+        
+        const proc = child_process.spawn(tclshPath, [wrapperFile], spawnOptions);
+        this.log(`  Process spawned with PID: ${proc.pid || 'unknown'}`);
         
         let stdout = '';
         let stderr = '';
         
         proc.stdout?.on('data', (data) => {
-          stdout += data.toString();
+          const chunk = data.toString();
+          stdout += chunk;
+          this.log(`  [STDOUT] Received ${chunk.length} bytes: ${chunk.substring(0, 100)}${chunk.length > 100 ? '...' : ''}`);
         });
         
         proc.stderr?.on('data', (data) => {
-          stderr += data.toString();
+          const chunk = data.toString();
+          stderr += chunk;
+          this.log(`  [STDERR] Received ${chunk.length} bytes: ${chunk.substring(0, 200)}${chunk.length > 200 ? '...' : ''}`);
         });
         
         proc.on('error', (err) => {
           // tclsh not found or execution error
+          this.log(`  [ERROR] Process error event: ${err.message}`);
+          this.log(`    Error name: ${err.name}`);
+          this.log(`    Error stack: ${err.stack}`);
+          
           const diagnostic = new vscode.Diagnostic(
             new vscode.Range(0, 0, 0, 0),
             `Failed to run tclsh: ${err.message}. Check tcl.runtime.tclshPath setting.`,
@@ -133,35 +180,56 @@ export class TclSyntaxChecker {
           diagnostic.source = 'tcl-syntax';
           
           // Clean up temp files
-          try { fs.unlinkSync(tempFile); } catch {}
-          try { fs.unlinkSync(initFile); } catch {}
-          try { fs.unlinkSync(wrapperFile); } catch {}
+          this.log(`  Cleaning up temp files after error...`);
+          try { fs.unlinkSync(tempFile); this.log(`    Deleted tempFile`); } catch (e) { this.log(`    Failed to delete tempFile: ${e}`); }
+          try { fs.unlinkSync(initFile); this.log(`    Deleted initFile`); } catch (e) { this.log(`    Failed to delete initFile: ${e}`); }
+          try { fs.unlinkSync(wrapperFile); this.log(`    Deleted wrapperFile`); } catch (e) { this.log(`    Failed to delete wrapperFile: ${e}`); }
           
           resolve({ uri: document.uri, diagnostics: [diagnostic] });
         });
         
         proc.on('close', (code) => {
+          this.log(`  [CLOSE] Process exited with code: ${code}`);
+          this.log(`    Total stdout length: ${stdout.length} bytes`);
+          this.log(`    Total stderr length: ${stderr.length} bytes`);
+          if (stderr.length > 0) {
+            this.log(`    Full stderr content:\n${stderr}`);
+          }
+          
           // Clean up temp files
-          try { fs.unlinkSync(tempFile); } catch {}
-          try { fs.unlinkSync(initFile); } catch {}
-          try { fs.unlinkSync(wrapperFile); } catch {}
+          this.log(`  Cleaning up temp files...`);
+          try { fs.unlinkSync(tempFile); this.log(`    Deleted tempFile`); } catch (e) { this.log(`    Failed to delete tempFile: ${e}`); }
+          try { fs.unlinkSync(initFile); this.log(`    Deleted initFile`); } catch (e) { this.log(`    Failed to delete initFile: ${e}`); }
+          try { fs.unlinkSync(wrapperFile); this.log(`    Deleted wrapperFile`); } catch (e) { this.log(`    Failed to delete wrapperFile: ${e}`); }
           
           if (code === 0) {
             // No syntax errors
+            this.log(`  Result: No syntax errors detected`);
             resolve({ uri: document.uri, diagnostics: [] });
             return;
           }
           
           // Parse error messages from stderr
+          this.log(`  Parsing error output from stderr...`);
           const diagnostics = this.parseErrorOutput(stderr, document);
+          this.log(`  Parsed ${diagnostics.length} diagnostic(s)`);
+          diagnostics.forEach((d, idx) => {
+            this.log(`    [${idx + 1}] Line ${d.range.start.line}: ${d.message.substring(0, 100)}`);
+          });
+          
           resolve({ uri: document.uri, diagnostics });
         });
         
       } catch (err: any) {
         // Clean up temp files on error
-        try { fs.unlinkSync(tempFile); } catch {}
-        try { fs.unlinkSync(initFile); } catch {}
-        try { fs.unlinkSync(wrapperFile); } catch {}
+        this.log(`  [EXCEPTION] Caught exception: ${err.message}`);
+        this.log(`    Exception name: ${err.name}`);
+        this.log(`    Exception stack: ${err.stack}`);
+        
+        this.log(`  Cleaning up temp files after exception...`);
+        try { fs.unlinkSync(tempFile); this.log(`    Deleted tempFile`); } catch (e) { this.log(`    Failed to delete tempFile: ${e}`); }
+        try { fs.unlinkSync(initFile); this.log(`    Deleted initFile`); } catch (e) { this.log(`    Failed to delete initFile: ${e}`); }
+        try { fs.unlinkSync(wrapperFile); this.log(`    Deleted wrapperFile`); } catch (e) { this.log(`    Failed to delete wrapperFile: ${e}`); }
         
         const diagnostic = new vscode.Diagnostic(
           new vscode.Range(0, 0, 0, 0),
@@ -220,11 +288,18 @@ export class TclSyntaxChecker {
    * Parse error output from tclsh and create diagnostics
    */
   private parseErrorOutput(errorText: string, document: vscode.TextDocument): vscode.Diagnostic[] {
+    this.log(`parseErrorOutput called`);
+    this.log(`  Error text length: ${errorText?.length || 0} bytes`);
+    this.log(`  Document line count: ${document.lineCount}`);
+    
     const diagnostics: vscode.Diagnostic[] = [];
     
     if (!errorText || errorText.trim().length === 0) {
+      this.log(`  Error text is empty, returning no diagnostics`);
       return diagnostics;
     }
+    
+    this.log(`  Full error text:\n${errorText}`);
     
     // TCL error patterns:
     // 1. "ERROR: <message>" - generic error
@@ -235,24 +310,38 @@ export class TclSyntaxChecker {
     // 6. Line references like "    (file \"...\" line X)"
     
     const lines = errorText.split(/\r?\n/);
+    this.log(`  Split into ${lines.length} line(s)`);
+    
     let currentError = '';
     let errorLine = 0;
     
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      this.log(`  Parsing line ${i + 1}: "${line}"`);
+      
       // Check for line number references
       const lineMatch = line.match(/line (\d+)/i);
       if (lineMatch) {
         errorLine = parseInt(lineMatch[1], 10) - 1; // Convert to 0-based
         errorLine = Math.max(0, Math.min(errorLine, document.lineCount - 1));
+        this.log(`    Found line reference: ${lineMatch[1]} (0-based: ${errorLine})`);
       }
       
       // Extract error message
       if (line.includes('ERROR:')) {
         currentError = line.replace(/^.*ERROR:\s*/, '').trim();
+        this.log(`    Extracted error from ERROR: prefix: "${currentError}"`);
       } else if (line.trim().length > 0 && !line.includes('(file ') && !line.startsWith('    ')) {
+        const prevError = currentError;
         currentError += (currentError ? ' ' : '') + line.trim();
+        this.log(`    Appended to current error (was: "${prevError}", now: "${currentError}")`);
+      } else {
+        this.log(`    Skipped line (empty or metadata)`);
       }
     }
+    
+    this.log(`  Final parsed error: "${currentError}"`);
+    this.log(`  Final error line: ${errorLine}`);
     
     // Common TCL error patterns that can be detected
     const errorPatterns = [
@@ -272,6 +361,7 @@ export class TclSyntaxChecker {
       for (const ep of errorPatterns) {
         if (ep.pattern.test(currentError)) {
           severity = ep.severity;
+          this.log(`  Matched error pattern: ${ep.pattern}, severity: ${severity === vscode.DiagnosticSeverity.Error ? 'Error' : 'Warning'}`);
           break;
         }
       }
@@ -281,14 +371,21 @@ export class TclSyntaxChecker {
       
       // For brace/bracket errors, try to find the actual problematic line
       if (/missing close-brace|unmatched open brace/i.test(currentError)) {
+        this.log(`  Attempting to find brace error line...`);
         targetLine = this.findBraceError(document);
+        this.log(`    Found brace error at line ${targetLine}`);
       } else if (/missing close-bracket/i.test(currentError)) {
+        this.log(`  Attempting to find bracket error line...`);
         targetLine = this.findBracketError(document);
+        this.log(`    Found bracket error at line ${targetLine}`);
       } else if (/extra characters after close-quote/i.test(currentError)) {
+        this.log(`  Attempting to find quote error line...`);
         targetLine = this.findQuoteError(document);
+        this.log(`    Found quote error at line ${targetLine}`);
       }
       
       if (targetLine === -1) {
+        this.log(`  Error line detection returned -1, using default: ${errorLine}`);
         targetLine = errorLine;
       }
       
@@ -296,17 +393,21 @@ export class TclSyntaxChecker {
       const diagnostic = new vscode.Diagnostic(range, currentError, severity);
       diagnostic.source = 'tcl-syntax';
       diagnostics.push(diagnostic);
+      this.log(`  Created diagnostic at line ${targetLine}: "${currentError}"`);
     }
     
     // If no specific error was parsed but we have error text, create a general error
     if (diagnostics.length === 0 && errorText.trim().length > 0) {
+      this.log(`  No specific error parsed, creating general error diagnostic`);
       const cleanError = errorText.replace(/^.*ERROR:\s*/i, '').trim();
       const range = new vscode.Range(errorLine, 0, errorLine, 1000);
       const diagnostic = new vscode.Diagnostic(range, cleanError, vscode.DiagnosticSeverity.Error);
       diagnostic.source = 'tcl-syntax';
       diagnostics.push(diagnostic);
+      this.log(`  Created general error diagnostic: "${cleanError}"`);
     }
     
+    this.log(`  Returning ${diagnostics.length} diagnostic(s)`);
     return diagnostics;
   }
 
