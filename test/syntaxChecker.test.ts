@@ -587,6 +587,209 @@ describe('TCL Syntax Checker', () => {
     });
   });
 
+  describe('False-positive regression fixes', () => {
+    // Fix: isCommentStart — # is only a comment at command boundaries
+    it('does not treat a mid-word hash as a comment in brace scanning', () => {
+      // "foo#bar" — the # is not at a command boundary, so braces after it still count
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {} {',
+        '  set x foo#bar',
+        '}',
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(0);
+    });
+
+    it('treats ;# as a valid inline comment at top level, not causing false brace errors', () => {
+      // At depth 0, ;# starts a comment so the { after it must not be counted
+      const issues = collectLightweightSyntaxIssues([
+        'set x 1 ;# top-level comment with unclosed { brace',
+        'set y 2',
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: unmatched brace where hash is not a comment', () => {
+      // The hash here is mid-expression; braces still count, so the missing } is a real error
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {} {',
+        '  set x [expr {1 + 1}]',
+        // deliberately missing the closing } for proc
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: top-level-only comment skip — # lines inside open brace blocks must NOT be skipped
+    it('does not skip #-prefixed lines that are inside an open brace block', () => {
+      // This would produce a false negative (missed error) if the comment-skip
+      // was applied inside an open brace context.  The unclosed proc brace must
+      // still be detected even though there is a # line later.
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {} {',
+        '  # this comment is inside the proc body',
+        '  puts "hello"',
+        // missing closing }
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(1);
+    });
+
+    it('true positive: unclosed bracket at top level with an embedded comment', () => {
+      // At depth 0, brackets are counted; the # line is a top-level comment that
+      // must not suppress the preceding unclosed bracket.
+      const issues = collectLightweightSyntaxIssues([
+        'set x [expr {1 + 1}',
+        '# top-level comment between the unclosed bracket and end of file',
+        'set y 2',
+      ], { includeUsageAnalysis: false });
+
+      const bracketIssues = issues.filter(i => i.message === 'Possible unmatched bracket');
+      expect(bracketIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: escaped braces do not count toward brace depth
+    it('does not flag escaped braces as unmatched', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'puts "open brace: \\{"',
+        'puts "close brace: \\}"',
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: real unmatched brace is still detected even when escaped braces are present', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'puts "escaped: \\{"',
+        'proc test {} {',
+        '  puts "hello"',
+        // missing closing }
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: escaped brackets do not count toward bracket depth
+    it('does not flag escaped brackets as unmatched', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'puts "open bracket: \\["',
+        'puts "close bracket: \\]"',
+      ], { includeUsageAnalysis: false });
+
+      const bracketIssues = issues.filter(i => i.message === 'Possible unmatched bracket');
+      expect(bracketIssues).to.have.lengthOf(0);
+    });
+
+    // Fix: anchored set regex — "set" appearing mid-word or inside a string is not a definition
+    it('does not register a variable definition when "set" appears mid-word', () => {
+      // "offset" contains "set" but is not a set command
+      const issues = collectLightweightSyntaxIssues([
+        'set offset 10',
+        'puts $offset',
+      ], { includeUsageAnalysis: true });
+
+      // offset is used, so no unused-variable warning expected
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    it('does not treat "set" inside a quoted string as a variable definition', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'puts "please set the value before calling"',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: plain unused variable is still flagged', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set unusedVar 42',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('unusedVar'));
+      expect(unusedIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: anchored proc regex — "proc" in a comment or string does not define a proc
+    it('does not register a proc definition when "proc" appears in a comment', () => {
+      const issues = collectLightweightSyntaxIssues([
+        '# proc notAProc {} {}',
+        'proc realProc {} { puts "hi" }',
+        'realProc',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused proc'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    // Fix: array-element variables (arr($key)) are not flagged as unused
+    it('does not flag array-element variable as unused', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set cache($key) "value"',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: simple variable that is genuinely unused is still flagged', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set simpleUnused "value"',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('simpleUnused'));
+      expect(unusedIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: :: global namespaced variables are not flagged as unused
+    it('does not flag global :: namespaced variable as unused', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set ::myGlobalConfig "production"',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    // Fix: namespaced procs (ns::func) are not flagged as unused
+    it('does not flag namespaced proc as unused', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'proc myns::helper {x} { return $x }',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused proc'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: non-namespaced unused proc is still flagged', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'proc unusedLocalProc {x} { return $x }',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('unusedLocalProc'));
+      expect(unusedIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: dynamic set with $varname as the variable name is not tracked
+    it('does not register a definition for set with a dynamic variable name', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set $dynamicName "value"',
+      ], { includeUsageAnalysis: true });
+
+      // No unused-variable diagnostic because the dynamic-name set was skipped
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+  });
+
   describe('Import preloading init script', () => {
     it('generates source guards for each file and normalizes slashes', () => {
       const script = buildSyntaxInitScript([
