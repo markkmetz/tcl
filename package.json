@@ -238,6 +238,7 @@
     "test": "mocha -r ts-node/register 'test/*.test.ts'",
     "test:integration": "npm run compile && tsc -p tsconfig.integration.json && node out/test/runTests.js",
     "test:integration:lightweight": "npm run compile && tsc -p tsconfig.integration.json && TEST_GREP='Lightweight Syntax Stability Integration' node out/test/runTests.js",
+    "test:integration:keyword-providers": "npm run compile && tsc -p tsconfig.integration.json && TEST_GREP='keyword-position' node out/test/runTests.js",
     "build": "npm run compile && npm run package",
     "package": "npm version patch --no-git-tag-version && vsce package"
   },

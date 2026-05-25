@@ -190,4 +190,86 @@ suite('Hover Provider', () => {
       );
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // keyword-position: try...on handler type tokens must NOT produce hover
+  // ─────────────────────────────────────────────────────────────────────────
+  suite('No hover on try-on keyword-position tokens', () => {
+    let doc: vscode.TextDocument;
+
+    suiteSetup(async () => {
+      const opened = await openFixture('try-on-keywords.tcl');
+      doc = opened.doc;
+    });
+
+    /** Locate `word` on the first line whose text equals `lineText` and hover. */
+    async function hoverOnWord(lineText: string, word: string): Promise<vscode.Hover[]> {
+      for (let i = 0; i < doc.lineCount; i++) {
+        const text = doc.lineAt(i).text;
+        if (text === lineText) {
+          const col = text.indexOf(word);
+          assert.ok(col !== -1, `Word "${word}" not found on line: ${lineText}`);
+          return (await vscode.commands.executeCommand<vscode.Hover[]>(
+            'vscode.executeHoverProvider',
+            doc.uri,
+            new vscode.Position(i, col + 1)
+          )) ?? [];
+        }
+      }
+      throw new Error(`Line not found in fixture: "${lineText}"`);
+    }
+
+    test('no hover for "ok" when used as try handler type', async () => {
+      const hovers = await hoverOnWord('} on ok {result opts} {', 'ok');
+      assert.ok(
+        !hovers || hovers.length === 0,
+        `Expected no hover for keyword-position "ok" but got: ${hoverText(hovers)}`
+      );
+    });
+
+    test('no hover for "error" when used as try handler type', async () => {
+      const hovers = await hoverOnWord('} on error {msg opts} {', 'error');
+      assert.ok(
+        !hovers || hovers.length === 0,
+        `Expected no hover for keyword-position "error" but got: ${hoverText(hovers)}`
+      );
+    });
+
+    test('no hover for "return" when used as try handler type', async () => {
+      const hovers = await hoverOnWord('} on return {result opts} {', 'return');
+      assert.ok(
+        !hovers || hovers.length === 0,
+        `Expected no hover for keyword-position "return" but got: ${hoverText(hovers)}`
+      );
+    });
+
+    test('no hover for "break" when used as try handler type', async () => {
+      const hovers = await hoverOnWord('} on break {} {', 'break');
+      assert.ok(
+        !hovers || hovers.length === 0,
+        `Expected no hover for keyword-position "break" but got: ${hoverText(hovers)}`
+      );
+    });
+
+    test('no hover for "continue" when used as try handler type', async () => {
+      const hovers = await hoverOnWord('} on continue {} {', 'continue');
+      assert.ok(
+        !hovers || hovers.length === 0,
+        `Expected no hover for keyword-position "continue" but got: ${hoverText(hovers)}`
+      );
+    });
+
+    test('hover IS returned for "return" used as a command', async () => {
+      const hovers = await hoverOnWord('    return $result', 'return');
+      assert.ok(
+        hovers && hovers.length > 0,
+        'Expected hover for "return" used as a command but got none'
+      );
+      const text = hoverText(hovers);
+      assert.ok(
+        /return/i.test(text),
+        `Expected "return" in hover text for command use, got: ${text}`
+      );
+    });
+  });
 });
