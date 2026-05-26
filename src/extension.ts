@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { TclDefinitionProvider } from './definitionProvider';
 import { TclIndexer } from './indexer';
 import { TclPreviewProvider } from './previewProvider';
@@ -84,6 +86,9 @@ export function activate(context: vscode.ExtensionContext) {
   syntaxStatusBar.show();
   context.subscriptions.push(syntaxStatusBar);
 
+  fs.mkdirSync(context.globalStorageUri.fsPath, { recursive: true });
+  const syntaxTraceLogPath = path.join(context.globalStorageUri.fsPath, 'syntax-check.log');
+
   let syntaxBackgroundScanStarted = false;
 
   // disposables for optional features
@@ -98,7 +103,7 @@ export function activate(context: vscode.ExtensionContext) {
   let syntaxDiagnostics: vscode.DiagnosticCollection | undefined;
 
   // syntax checker
-  const syntaxChecker = new TclSyntaxChecker(indexer, indexerLogChannel);
+  const syntaxChecker = new TclSyntaxChecker(indexer, indexerLogChannel, syntaxTraceLogPath);
 
   const renderSyntaxStatus = (status: SyntaxCheckStatus) => {
     if (status.state === 'scanning') {
@@ -228,6 +233,7 @@ export function activate(context: vscode.ExtensionContext) {
   // syntax checking with tclsh
   const setupSyntaxChecking = () => {
     const mode = config().get<string>('tcl.runtime.syntaxCheckMode', 'lightweight');
+    syntaxChecker.trace(`setupSyntaxChecking mode=${mode}`);
     
     if (!syntaxDiagnostics) {
       syntaxDiagnostics = vscode.languages.createDiagnosticCollection('tcl-syntax');
@@ -261,6 +267,7 @@ export function activate(context: vscode.ExtensionContext) {
     const useLightweight = mode === 'lightweight';
 
     const checkAllDocuments = () => {
+      syntaxChecker.trace(`checkAllDocuments useLightweight=${useLightweight} openDocuments=${vscode.workspace.textDocuments.length}`);
       vscode.workspace.textDocuments.forEach(doc => {
         if (doc.languageId !== 'tcl') return;
         if (useLightweight) {
@@ -274,6 +281,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.workspace.onDidChangeTextDocument(event => {
         if (event.document.languageId !== 'tcl') return;
+        syntaxChecker.trace(`onDidChangeTextDocument uri=${event.document.uri.fsPath} version=${event.document.version}`);
         if (useLightweight) {
           syntaxChecker.scheduleLightweightCheck(event.document, syntaxDiagnostics!);
         } else {
@@ -285,6 +293,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.workspace.onDidSaveTextDocument(doc => {
         if (doc.languageId !== 'tcl') return;
+        syntaxChecker.trace(`onDidSaveTextDocument uri=${doc.uri.fsPath} version=${doc.version}`);
         if (useLightweight) {
           syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
         } else {
@@ -297,6 +306,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.workspace.onDidOpenTextDocument(doc => {
         if (doc.languageId !== 'tcl') return;
+        syntaxChecker.trace(`onDidOpenTextDocument uri=${doc.uri.fsPath} version=${doc.version}`);
         // Always run the lightweight parser immediately on open
         syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
         // If configured mode is not lightweight, also run the configured check
@@ -309,8 +319,16 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.workspace.onDidCloseTextDocument(doc => {
         if (doc.languageId === 'tcl') {
+          syntaxChecker.trace(`onDidCloseTextDocument uri=${doc.uri.fsPath} version=${doc.version}`);
           syntaxDiagnostics!.delete(doc.uri);
         }
+      })
+    );
+
+    context.subscriptions.push(
+      vscode.window.onDidChangeActiveTextEditor(editor => {
+        const uri = editor?.document.uri.fsPath;
+        syntaxChecker.trace(`onDidChangeActiveTextEditor uri=${uri ?? 'none'}`);
       })
     );
 

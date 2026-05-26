@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import {
   closeAllEditors,
   collectDiagnosticSignatures,
+  collectWorkspaceDiagnosticSignatures,
   countSignatureTransitions,
   diagnosticSignature,
   ensureExtensionActive,
@@ -11,6 +12,7 @@ import {
   setLightweightRuntimeConfig,
   sleep,
   tclSyntaxDiagnostics,
+  workspaceDiagnosticSignature,
   waitForDiagnosticStability,
   type LightweightRuntimeConfigSnapshot,
 } from './helpers';
@@ -130,6 +132,7 @@ suite('Lightweight Syntax Stability Integration', () => {
     });
     assert.ok(errorDiagnostics.length > 0, 'Expected unmatched brace diagnostics in error fixture');
     const expectedErrorSignature = diagnosticSignature(errorDiagnostics);
+    const expectedWorkspaceSignature = workspaceDiagnosticSignature();
 
     const validFile = await openFixture('syntax-errors/lightweight-stability-valid.tcl', 600);
     const validDiagnostics = await waitForDiagnosticStability(validFile.doc.uri, {
@@ -138,6 +141,18 @@ suite('Lightweight Syntax Stability Integration', () => {
       minWaitMs: 2200,
     });
     assert.strictEqual(validDiagnostics.length, 0, 'Expected no diagnostics in valid fixture');
+    assert.strictEqual(
+      workspaceDiagnosticSignature(),
+      expectedWorkspaceSignature,
+      'Expected active editor changes to leave workspace-wide diagnostics unchanged'
+    );
+
+    const workspaceSignaturesAfterValid = await collectWorkspaceDiagnosticSignatures(1200, 150);
+    assert.strictEqual(
+      countSignatureTransitions(workspaceSignaturesAfterValid),
+      0,
+      `Workspace diagnostics changed after switching to the valid file: ${workspaceSignaturesAfterValid.join(' -> ')}`
+    );
 
     await vscode.window.showTextDocument(errorFile.doc);
     await sleep(200);
@@ -152,6 +167,18 @@ suite('Lightweight Syntax Stability Integration', () => {
       revisitedSignature,
       expectedErrorSignature,
       'Expected error diagnostics to remain unchanged after file switching'
+    );
+    assert.strictEqual(
+      workspaceDiagnosticSignature(),
+      expectedWorkspaceSignature,
+      'Expected workspace-wide diagnostics to remain unchanged after switching back'
+    );
+
+    const workspaceSignaturesAfterReturn = await collectWorkspaceDiagnosticSignatures(1200, 150);
+    assert.strictEqual(
+      countSignatureTransitions(workspaceSignaturesAfterReturn),
+      0,
+      `Workspace diagnostics changed after switching back to the error file: ${workspaceSignaturesAfterReturn.join(' -> ')}`
     );
 
     const finalValidDiagnostics = tclSyntaxDiagnostics(validFile.doc.uri);

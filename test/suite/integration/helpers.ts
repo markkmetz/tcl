@@ -1,8 +1,13 @@
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import * as path from 'path';
 
 /** Compiled to out/test/suite/integration/ — four levels up is the workspace root. */
 const FIXTURES_ROOT = path.resolve(__dirname, '../../../../test/fixtures');
+const SYNTAX_TRACE_LOG = path.resolve(
+  __dirname,
+  '../../../../.vscode-test/user-data/User/globalStorage/kmetzenterprises.marks-tcl-extension/syntax-check.log'
+);
 
 export function fixturePath(name: string): string {
   return path.join(FIXTURES_ROOT, name);
@@ -89,6 +94,32 @@ export function diagnosticSignature(diagnostics: vscode.Diagnostic[]): string {
     .join('|');
 }
 
+export function workspaceDiagnosticSignature(): string {
+  return vscode.languages.getDiagnostics()
+    .flatMap(([uri, diagnostics]) =>
+      diagnostics
+        .filter(d => d.source === 'tcl-syntax')
+        .map(d => `${uri.fsPath}:${d.range.start.line}:${d.severity}:${d.message}`)
+    )
+    .sort()
+    .join('|');
+}
+
+export async function collectWorkspaceDiagnosticSignatures(
+  windowMs: number,
+  intervalMs = 200
+): Promise<string[]> {
+  const signatures: string[] = [];
+  const started = Date.now();
+
+  while (Date.now() - started < windowMs) {
+    signatures.push(workspaceDiagnosticSignature());
+    await sleep(intervalMs);
+  }
+
+  return signatures;
+}
+
 export async function waitForDiagnosticStability(
   uri: vscode.Uri,
   options: DiagnosticStabilityOptions = {}
@@ -156,6 +187,33 @@ export function countSignatureTransitions(signatures: string[]): number {
   return transitions;
 }
 
+async function waitForSyntaxTraceAppend(
+  marker: string,
+  minimumSize: number,
+  timeoutMs = 7000,
+  intervalMs = 100
+): Promise<void> {
+  const started = Date.now();
+
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const stat = fs.statSync(SYNTAX_TRACE_LOG);
+      if (stat.size > minimumSize) {
+        const text = fs.readFileSync(SYNTAX_TRACE_LOG, 'utf8');
+        if (text.slice(minimumSize).includes(marker)) {
+          return;
+        }
+      }
+    } catch {
+      // ignore missing log until the extension host creates it
+    }
+
+    await sleep(intervalMs);
+  }
+
+  throw new Error(`Timed out waiting for syntax trace marker: ${marker}`);
+}
+
 export async function setLightweightRuntimeConfig(): Promise<LightweightRuntimeConfigSnapshot> {
   const cfg = vscode.workspace.getConfiguration('tcl.runtime');
   const snapshot: LightweightRuntimeConfigSnapshot = {
@@ -165,11 +223,19 @@ export async function setLightweightRuntimeConfig(): Promise<LightweightRuntimeC
     lightweightUsageAnalysis: cfg.get<boolean>('lightweightUsageAnalysis'),
   };
 
+  let initialLogSize = 0;
+  try {
+    initialLogSize = fs.statSync(SYNTAX_TRACE_LOG).size;
+  } catch {
+    initialLogSize = 0;
+  }
+
   await cfg.update('syntaxCheckMode', 'lightweight', vscode.ConfigurationTarget.Global);
   await cfg.update('syntaxCheckDelay', 1, vscode.ConfigurationTarget.Global);
   await cfg.update('syntaxCheckImports', 'currentOnly', vscode.ConfigurationTarget.Global);
   await cfg.update('lightweightUsageAnalysis', true, vscode.ConfigurationTarget.Global);
-  await sleep(750);
+  await waitForSyntaxTraceAppend('setupSyntaxChecking mode=lightweight', initialLogSize);
+  await waitForSyntaxTraceAppend('checkAllDocuments useLightweight=true', initialLogSize);
 
   return snapshot;
 }
