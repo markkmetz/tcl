@@ -7,6 +7,39 @@ import {
   completionLabels,
 } from './helpers';
 
+function completionInsertText(item: vscode.CompletionItem): string {
+  const insertText = item.insertText;
+  if (typeof insertText === 'string') {
+    return insertText;
+  }
+  if (insertText instanceof vscode.SnippetString) {
+    return insertText.value;
+  }
+  const label = typeof item.label === 'string' ? item.label : item.label.label;
+  return label;
+}
+
+function applyCompletionToSingleLine(
+  original: string,
+  item: vscode.CompletionItem,
+  fallbackPos: vscode.Position
+): string {
+  const text = completionInsertText(item);
+  const range = item.range as vscode.Range | { replacing?: vscode.Range } | undefined;
+  let start = fallbackPos.character;
+  let end = fallbackPos.character;
+
+  if (range instanceof vscode.Range) {
+    start = range.start.character;
+    end = range.end.character;
+  } else if (range?.replacing) {
+    start = range.replacing.start.character;
+    end = range.replacing.end.character;
+  }
+
+  return `${original.slice(0, start)}${text}${original.slice(end)}`;
+}
+
 suite('Completion Provider', () => {
   suiteSetup(async () => {
     await ensureExtensionActive();
@@ -121,9 +154,11 @@ suite('Completion Provider', () => {
 
   suite('Namespace completions', () => {
     let list: vscode.CompletionList;
+    let doc: vscode.TextDocument;
 
     suiteSetup(async () => {
-      const { doc } = await openFixture('sample.tcl');
+      const opened = await openFixture('sample.tcl');
+      doc = opened.doc;
       const pos = new vscode.Position(1, 0);
       list = await vscode.commands.executeCommand<vscode.CompletionList>(
         'vscode.executeCompletionItemProvider',
@@ -143,6 +178,131 @@ suite('Completion Provider', () => {
         vscode.CompletionItemKind.Module,
         `Expected Module kind for namespace, got ${nsItem.kind}`
       );
+    });
+
+    test('keeps no-leading-colon namespace insertion as "ns::"', async () => {
+      const typed = 'ns2';
+      const scratch = await vscode.workspace.openTextDocument({ language: 'tcl', content: typed });
+      await vscode.window.showTextDocument(scratch);
+      const pos = new vscode.Position(0, typed.length);
+      const nsList = await vscode.commands.executeCommand<vscode.CompletionList>(
+        'vscode.executeCompletionItemProvider',
+        scratch.uri,
+        pos
+      );
+
+      const nsItem = nsList.items.find(item => {
+        const label = typeof item.label === 'string' ? item.label : item.label.label;
+        return label === 'ns2::' && item.kind === vscode.CompletionItemKind.Module;
+      });
+
+      assert.ok(nsItem, 'Expected namespace completion for "ns2::"');
+      const insertText = nsItem!.insertText;
+      const text = typeof insertText === 'string'
+        ? insertText
+        : (insertText as vscode.SnippetString | undefined)?.value;
+      assert.strictEqual(text, 'ns2::');
+    });
+
+    test('keeps leading-colon namespace insertion as "::ns::" and replaces full token', async () => {
+      const typed = '::ns1';
+      const scratch = await vscode.workspace.openTextDocument({ language: 'tcl', content: typed });
+      await vscode.window.showTextDocument(scratch);
+      const pos = new vscode.Position(0, typed.length);
+      const nsList = await vscode.commands.executeCommand<vscode.CompletionList>(
+        'vscode.executeCompletionItemProvider',
+        scratch.uri,
+        pos
+      );
+
+      const nsItem = nsList.items.find(item => {
+        const label = typeof item.label === 'string' ? item.label : item.label.label;
+        return label === 'ns1::' && item.kind === vscode.CompletionItemKind.Module;
+      });
+
+      assert.ok(nsItem, 'Expected namespace completion for "ns1::"');
+
+      const insertText = nsItem!.insertText;
+      const text = typeof insertText === 'string'
+        ? insertText
+        : (insertText as vscode.SnippetString | undefined)?.value;
+      assert.strictEqual(text, '::ns1::');
+
+      const range = nsItem!.range as vscode.Range | { inserting?: vscode.Range; replacing?: vscode.Range } | undefined;
+      // Completion range must start at the first ':' so typed '::' is replaced,
+      // preventing accidental '::::' prefixes when accepting completion.
+      if (range instanceof vscode.Range) {
+        assert.strictEqual(range.start.character, 0);
+      } else if (range && range.replacing) {
+        assert.strictEqual(range.replacing.start.character, 0);
+      }
+    });
+
+    test('applying selected namespace completion never yields four leading colons', async () => {
+      const noGlobalTyped = 'ns2';
+      const noGlobalDoc = await vscode.workspace.openTextDocument({ language: 'tcl', content: noGlobalTyped });
+      await vscode.window.showTextDocument(noGlobalDoc);
+      const noGlobalPos = new vscode.Position(0, noGlobalTyped.length);
+      const noGlobalList = await vscode.commands.executeCommand<vscode.CompletionList>(
+        'vscode.executeCompletionItemProvider',
+        noGlobalDoc.uri,
+        noGlobalPos
+      );
+      const noGlobalItem = noGlobalList.items.find(item => {
+        const label = typeof item.label === 'string' ? item.label : item.label.label;
+        return label === 'ns2::' && item.kind === vscode.CompletionItemKind.Module;
+      });
+      assert.ok(noGlobalItem, 'Expected namespace completion for "ns2::"');
+      const noGlobalApplied = applyCompletionToSingleLine(noGlobalTyped, noGlobalItem!, noGlobalPos);
+      assert.strictEqual(noGlobalApplied, 'ns2::');
+
+      const globalTyped = '::ns1';
+      const globalDoc = await vscode.workspace.openTextDocument({ language: 'tcl', content: globalTyped });
+      await vscode.window.showTextDocument(globalDoc);
+      const globalPos = new vscode.Position(0, globalTyped.length);
+      const globalList = await vscode.commands.executeCommand<vscode.CompletionList>(
+        'vscode.executeCompletionItemProvider',
+        globalDoc.uri,
+        globalPos
+      );
+      const globalItem = globalList.items.find(item => {
+        const label = typeof item.label === 'string' ? item.label : item.label.label;
+        return label === 'ns1::' && item.kind === vscode.CompletionItemKind.Module;
+      });
+      assert.ok(globalItem, 'Expected namespace completion for "ns1::"');
+      const globalApplied = applyCompletionToSingleLine(globalTyped, globalItem!, globalPos);
+      assert.strictEqual(globalApplied, '::ns1::');
+      assert.ok(!globalApplied.startsWith('::::'), `Unexpected duplicated colons: ${globalApplied}`);
+    });
+
+    test('offers proc completions after typing fully qualified namespace in either style', async () => {
+      const docNoGlobal = await vscode.workspace.openTextDocument({ language: 'tcl', content: 'ns2::' });
+      await vscode.window.showTextDocument(docNoGlobal);
+      const posNoGlobal = new vscode.Position(0, 'ns2::'.length);
+      const noGlobalList = await vscode.commands.executeCommand<vscode.CompletionList>(
+        'vscode.executeCompletionItemProvider',
+        docNoGlobal.uri,
+        posNoGlobal
+      );
+      const hasBuzzNoGlobal = noGlobalList.items.some(item => {
+        const label = typeof item.label === 'string' ? item.label : item.label.label;
+        return label === 'ns2::buzz';
+      });
+      assert.ok(hasBuzzNoGlobal, 'Expected proc completion for "ns2::buzz" after "ns2::"');
+
+      const docGlobal = await vscode.workspace.openTextDocument({ language: 'tcl', content: '::ns1::' });
+      await vscode.window.showTextDocument(docGlobal);
+      const posGlobal = new vscode.Position(0, '::ns1::'.length);
+      const globalList = await vscode.commands.executeCommand<vscode.CompletionList>(
+        'vscode.executeCompletionItemProvider',
+        docGlobal.uri,
+        posGlobal
+      );
+      const hasFooGlobal = globalList.items.some(item => {
+        const label = typeof item.label === 'string' ? item.label : item.label.label;
+        return label === 'ns1::foo';
+      });
+      assert.ok(hasFooGlobal, 'Expected proc completion for "ns1::foo" after "::ns1::"');
     });
   });
 

@@ -314,6 +314,11 @@ async provideCompletionItems(
     nitem.detail = 'Tcl namespace';
     // Preserve the leading :: qualifier when the user has already typed it
     nitem.insertText = hasGlobalPrefix ? `::${ns}::` : `${ns}::`;
+    // Replace the full typed namespace token (including any leading ::) so
+    // accepting completion cannot duplicate colons like ::::::ns::
+    if (wordRange) {
+      nitem.range = wordRange;
+    }
     // trigger suggestions after inserting the namespace so the namespace's functions appear immediately
     nitem.command = { command: 'editor.action.triggerSuggest', title: 'Trigger Suggest' };
     items.push(nitem);
