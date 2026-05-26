@@ -37,6 +37,8 @@ interface CachedLightweightDiagnostics {
   mode: 'full' | 'syntaxOnly';
   diagnostics: Array<{
     line: number;
+    startChar: number;
+    endChar: number;
     message: string;
     severity: vscode.DiagnosticSeverity;
   }>;
@@ -85,7 +87,15 @@ export class TclSyntaxChecker {
     const issues = collectLightweightSyntaxIssues(lines, { includeUsageAnalysis });
     return issues.map(issue => {
       const line = Math.max(0, Math.min(issue.line, Math.max(0, lines.length - 1)));
-      const range = new vscode.Range(line, 0, line, 1000);
+      const lineText = lines[line] || '';
+      const hasTokenRange = Number.isInteger(issue.startChar) && Number.isInteger(issue.endChar) && (issue.endChar as number) > (issue.startChar as number);
+      const startChar = hasTokenRange
+        ? Math.max(0, Math.min(issue.startChar as number, lineText.length))
+        : 0;
+      const endChar = hasTokenRange
+        ? Math.max(startChar + 1, Math.min(issue.endChar as number, Math.max(lineText.length, startChar + 1)))
+        : Math.max(1, lineText.length);
+      const range = new vscode.Range(line, startChar, line, endChar);
       const diagnostic = new vscode.Diagnostic(
         range,
         issue.message,
@@ -108,6 +118,8 @@ export class TclSyntaxChecker {
       mode,
       diagnostics: diagnostics.map(d => ({
         line: d.range.start.line,
+        startChar: d.range.start.character,
+        endChar: d.range.end.character,
         message: d.message,
         severity: d.severity,
       })),
@@ -198,7 +210,7 @@ export class TclSyntaxChecker {
     return cached.diagnostics.map(entry => {
       const line = Math.max(0, entry.line);
       const diagnostic = new vscode.Diagnostic(
-        new vscode.Range(line, 0, line, 1000),
+        new vscode.Range(line, Math.max(0, entry.startChar), line, Math.max(Math.max(0, entry.startChar) + 1, entry.endChar)),
         entry.message,
         entry.severity
       );

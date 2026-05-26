@@ -15,6 +15,8 @@ export interface LightweightSyntaxIssue {
   line: number;
   message: string;
   severity: SyntaxSeverity;
+  startChar?: number;
+  endChar?: number;
 }
 
 export interface LightweightSyntaxOptions {
@@ -406,7 +408,7 @@ export function collectLightweightSyntaxIssues(
 
   if (options.includeUsageAnalysis !== false) {
     // --- Unused variable and proc detection (within current file only) ---
-    const varDefs: { raw: string; regex: RegExp; isPattern: boolean; line: number }[] = [];
+    const varDefs: { raw: string; regex: RegExp; isPattern: boolean; line: number; startChar: number; endChar: number }[] = [];
     const procDefs: { name: string; line: number }[] = [];
     const varUsages = new Set<string>();
 
@@ -434,6 +436,7 @@ export function collectLightweightSyntaxIssues(
     const setDefRe = /^\s*set\s+([^\s]+)/;
     const procDefRe = /^\s*proc\s+([A-Za-z0-9_:]+)\b/;
     const varUsageRe = /\$(?:\{([^}]+)\}|([A-Za-z_]\w*))/g;
+    const commandVarUsageRe = /(?:^|[;\[]|\s)(?:incr|append|lappend|unset|global|variable|upvar)\s+((?:::)?[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*(?:\([^)]*\))?)/g;
     const varNameRe = /^(?:::)?[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*(?:\([^)]*\))?$/;
 
     for (let i = 0; i < lines.length; i++) {
@@ -462,9 +465,17 @@ export function collectLightweightSyntaxIssues(
         const escaped = step1.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
         const pattern = '^' + escaped.replace(new RegExp(wildcardPlaceholder, 'g'), '.*') + '$';
         const isPattern = /\$\{[^}]+\}|\$[A-Za-z_]\w*/.test(raw);
+        const setStart = line.indexOf(raw);
         try {
           const regex = new RegExp(pattern);
-          varDefs.push({ raw, regex, isPattern, line: i });
+          varDefs.push({
+            raw,
+            regex,
+            isPattern,
+            line: i,
+            startChar: setStart >= 0 ? setStart : 0,
+            endChar: setStart >= 0 ? setStart + raw.length : raw.length,
+          });
         } catch (e) {
           // ignore invalid patterns
         }
@@ -481,6 +492,20 @@ export function collectLightweightSyntaxIssues(
         // only keep simple literal names (no dots/spaces)
         if (/[^A-Za-z0-9_:]/.test(name)) continue;
         varUsages.add(name);
+      }
+
+      // collect command-style usages that do not require "$" (e.g. [incr var])
+      let cmdMatch: RegExpExecArray | null;
+      commandVarUsageRe.lastIndex = 0;
+      while ((cmdMatch = commandVarUsageRe.exec(line)) !== null) {
+        const token = cmdMatch[1];
+        if (!token) continue;
+        // Record base variable for array element forms: arr(key) -> arr
+        const baseName = token.replace(/\(.*\)$/, '');
+        if (baseName) {
+          varUsages.add(baseName.replace(/^::+/, ''));
+          varUsages.add(baseName);
+        }
       }
     }
 
@@ -515,6 +540,8 @@ export function collectLightweightSyntaxIssues(
           line: vd.line,
           message: `Possible unused variable: ${vd.raw}`,
           severity: 'warning',
+          startChar: vd.startChar,
+          endChar: vd.endChar,
         });
       }
     }

@@ -38,6 +38,31 @@ describe('Unused variable and proc detection', () => {
     expect(varIssues.length).to.be.greaterThan(0);
   });
 
+  it('does not report unused variable when used by incr command style', () => {
+    const lines = [
+      'set var 0',
+      '[incr var]',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines);
+    const varIssues = issues.filter(i => /Possible unused variable: var/.test(i.message));
+    expect(varIssues).to.have.lengthOf(0);
+  });
+
+  it('reports unused variable with token-only range metadata', () => {
+    const lines = [
+      '  set onlyName 1',
+      'puts done',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines);
+    const issue = issues.find(i => /Possible unused variable: onlyName/.test(i.message));
+    expect(issue).to.exist;
+    expect(issue?.line).to.equal(0);
+    expect(issue?.startChar).to.equal(6);
+    expect(issue?.endChar).to.equal(14);
+  });
+
   it('does not report unused proc when invoked', () => {
     const lines = [
       'proc addTwo {a b} { expr {$a + $b} }',
