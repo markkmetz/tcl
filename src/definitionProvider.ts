@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { TclIndexer } from './indexer';
+import { isTclKeywordPosition } from './completionUtils';
 
 export class TclDefinitionProvider implements vscode.DefinitionProvider {
   private indexer: TclIndexer;
@@ -13,6 +14,12 @@ export class TclDefinitionProvider implements vscode.DefinitionProvider {
     position: vscode.Position,
     token: vscode.CancellationToken
   ): Promise<vscode.Location | vscode.Location[] | null> {
+    const line = document.lineAt(position.line).text;
+
+    // If the word is in a keyword/option position (e.g., 'error' after 'on' in
+    // a try block), it is not a navigable symbol — skip definition lookup.
+    if (isTclKeywordPosition(line, position.character)) { return null; }
+
     // Check for variable reference with $
     const varRange = document.getWordRangeAtPosition(position, /\$[A-Za-z0-9_:.]+/);
     if (varRange) {
@@ -23,7 +30,6 @@ export class TclDefinitionProvider implements vscode.DefinitionProvider {
     }
 
     // Check for namespace reference (e.g., "namespace eval ::ns1" or "::ns1::proc")
-    const line = document.lineAt(position.line).text;
     const linePrefix = line.substring(0, position.character);
     const namespaceEvalMatch = linePrefix.match(/namespace\s+eval\s+::?([A-Za-z0-9_:]+)$/);
     if (namespaceEvalMatch) {

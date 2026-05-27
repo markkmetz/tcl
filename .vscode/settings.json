@@ -1,5 +1,6 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "vsce": true
+        "vsce": true,
+        "npx @vscode/vsce": true
     }
 }

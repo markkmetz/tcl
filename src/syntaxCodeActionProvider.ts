@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { classifySyntaxError, fixInsertText, fixTitle } from './syntaxQuickFixes';
+import { classifySyntaxError, fixInsertText, fixTitle, getSuppressionOptionsForSeverityNumber } from './syntaxQuickFixes';
 
 export class TclSyntaxCodeActionProvider implements vscode.CodeActionProvider {
   static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
@@ -38,6 +38,28 @@ export class TclSyntaxCodeActionProvider implements vscode.CodeActionProvider {
           title: 'Show Tcl syntax troubleshooting tips'
         };
         actions.push(helpAction);
+        const options = getSuppressionOptionsForSeverityNumber(diagnostic.severity);
+        // Suppress this diagnostic for the line: offer severity-matching + all.
+        for (const option of options) {
+          const act = new vscode.CodeAction(option.lineTitle, vscode.CodeActionKind.QuickFix);
+          act.diagnostics = [diagnostic];
+          act.edit = new vscode.WorkspaceEdit();
+          const ln = Math.max(0, Math.min(diagnostic.range.start.line, document.lineCount - 1));
+          const insertPos = document.lineAt(ln).range.end;
+          const token = option.key === 'all' ? '  # tcl-ignore' : `  # tcl-ignore:${option.key}`;
+          act.edit.insert(document.uri, insertPos, token);
+          actions.push(act);
+        }
+
+        // Suppress across the file: offer severity-matching + all.
+        for (const option of options) {
+          const fAct = new vscode.CodeAction(option.fileTitle, vscode.CodeActionKind.QuickFix);
+          fAct.diagnostics = [diagnostic];
+          fAct.edit = new vscode.WorkspaceEdit();
+          const token = option.key === 'all' ? '# tcl-ignore-file\n' : `# tcl-ignore-file:${option.key}\n`;
+          fAct.edit.insert(document.uri, new vscode.Position(0, 0), token);
+          actions.push(fAct);
+        }
       }
     }
 

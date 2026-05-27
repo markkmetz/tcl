@@ -1,12 +1,23 @@
 import { expect } from 'chai';
-import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import {
+  collectLightweightSyntaxIssues,
+  buildSyntaxInitScript,
+  classifySyntaxSeverity,
+  extractErrorMessageAndLine,
+  resolveTargetLine,
+  selectPrimaryFrame,
+} from '../src/syntaxCheckerUtils';
 
 // Note: These tests require a mock vscode environment
 // For full integration tests, run in VS Code test environment
 
 describe('TCL Syntax Checker', () => {
+  const expectNearLine = (actual: number, expected: number) => {
+    expect(Math.abs(actual - expected)).to.be.lessThanOrEqual(1, `Expected ${actual} to be within ±1 of ${expected}`);
+  };
+
   describe('Error Detection Patterns', () => {
     it('should detect missing close brace pattern', () => {
       const content = `proc test {arg} {\n  puts "hello"\n  if {$arg > 0} {\n    puts "positive"`;
@@ -366,6 +377,458 @@ describe('TCL Syntax Checker', () => {
       const remoteResponse = { errors: [] };
       expect(remoteResponse.errors).to.be.an('array');
       expect(remoteResponse.errors).to.have.lengthOf(0);
+    });
+  });
+
+  describe('Real diagnostic mapping', () => {
+    it('maps explicit tclsh line references to 0-based diagnostics', () => {
+      const parsed = extractErrorMessageAndLine(
+        'ERROR: invalid command name "invalidCmd"\n    (file "test.tcl" line 3)',
+        4
+      );
+
+      const target = resolveTargetLine(parsed.message, parsed.fallbackLine, [
+        'set a 1',
+        'puts $a',
+        'invalidCmd',
+        'puts done',
+      ]);
+
+      expect(parsed.message.toLowerCase()).to.include('invalid command name');
+      expect(target).to.equal(2);
+      expect(parsed.frames).to.have.length.greaterThan(0);
+    });
+
+    it('uses specialized brace line detection when brace error text is reported', () => {
+      const lines = [
+        'proc test {} {\n' +
+        '  if {$x > 0} {\n' +
+        '    puts "x"\n' +
+        '  }\n',
+      ].join('').split('\n');
+
+      const parsed = extractErrorMessageAndLine(
+        'ERROR: missing close-brace\n    (file "test.tcl" line 99)',
+        lines.length
+      );
+      const target = resolveTargetLine(parsed.message, parsed.fallbackLine, lines);
+
+      expect(target).to.equal(1);
+    });
+
+    it('classifies missing variable reads as warning severity', () => {
+      const parsed = extractErrorMessageAndLine(
+        'ERROR: can\'t read "missingVar": no such variable\n    (file "test.tcl" line 1)',
+        1
+      );
+      const severity = classifySyntaxSeverity(parsed.message);
+
+      expect(severity).to.equal('warning');
+      expect(parsed.fallbackLine).to.equal(0);
+    });
+
+    it('extracts file frames for wrong # args errors', () => {
+      const parsed = extractErrorMessageAndLine(
+        'wrong # args: should be "proc name args body"\n    while executing\n"proc broken"\n    (file "/tmp/check.tcl" line 6)',
+        40
+      );
+
+      expect(parsed.message.toLowerCase()).to.include('wrong # args');
+      expect(parsed.frames).to.have.lengthOf(1);
+      expect(parsed.frames[0].filePath).to.equal('/tmp/check.tcl');
+      expect(parsed.frames[0].line).to.equal(5);
+      expect(parsed.fallbackLine).to.equal(5);
+    });
+
+    it('selects preferred frame when current temp file and sourced file are both present', () => {
+      const parsed = extractErrorMessageAndLine(
+        'wrong # args: should be "proc name args body"\n    (file "/workspace/lib/dependency.tcl" line 3)\n    (file "/tmp/vscode-tcl-check-1.tcl" line 8)',
+        30
+      );
+
+      const primary = selectPrimaryFrame(parsed.frames, ['/tmp/vscode-tcl-check-1.tcl']);
+      expect(primary).to.not.equal(undefined);
+      expect(primary?.filePath).to.equal('/tmp/vscode-tcl-check-1.tcl');
+      expect(primary?.line).to.equal(7);
+    });
+
+    it('matches preferred frame even with slash/case differences', () => {
+      const parsed = extractErrorMessageAndLine(
+        'wrong # args: should be "proc name args body"\n    (file "C:/Temp/VSCODE-TCL-CHECK-1.tcl" line 8)\n    (file "C:/workspace/dep.tcl" line 2)',
+        40
+      );
+
+      const primary = selectPrimaryFrame(parsed.frames, ['c:\\temp\\vscode-tcl-check-1.tcl']);
+      expect(primary).to.not.equal(undefined);
+      expect(primary?.filePath).to.equal('C:/Temp/VSCODE-TCL-CHECK-1.tcl');
+      expect(primary?.line).to.equal(7);
+    });
+
+    it('maps wrong-args fixture line using nearest-line tolerance', () => {
+      const fixturePath = path.join(__dirname, 'fixtures', 'syntax-errors', 'wrong-args.tcl');
+      const content = fs.readFileSync(fixturePath, 'utf8');
+      const lines = content.split(/\r?\n/);
+
+      const expectedLine = lines.findIndex(line => line.includes('[addTwo 10]'));
+      expect(expectedLine).to.be.greaterThan(-1);
+
+      const parsed = extractErrorMessageAndLine(
+        `wrong # args: should be "addTwo a b"\n    while executing\n"addTwo 10"\n    (file "/tmp/vscode-tcl-check-123.tcl" line ${expectedLine + 1})`,
+        lines.length
+      );
+      const mapped = resolveTargetLine(parsed.message, parsed.fallbackLine, lines);
+
+      expectNearLine(mapped, expectedLine);
+    });
+
+    it('extracts multiple frames from callstack text', () => {
+      const parsed = extractErrorMessageAndLine(
+        'invalid command name "badCall"\n    while executing\n"badCall"\n    (file "/tmp/current.tcl" line 4)\n    invoked from within\n"wrapper"\n    (file "/workspace/dep.tcl" line 12)',
+        50
+      );
+
+      expect(parsed.frames).to.have.lengthOf(2);
+      expect(parsed.frames[0].filePath).to.equal('/tmp/current.tcl');
+      expect(parsed.frames[0].line).to.equal(3);
+      expect(parsed.frames[1].filePath).to.equal('/workspace/dep.tcl');
+      expect(parsed.frames[1].line).to.equal(11);
+    });
+
+    it('collects lightweight pairing issues for braces, brackets, and quotes', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {arg} {',
+        '  set value [expr {$arg + 1}',
+        '  puts "unterminated',
+      ]);
+
+      // Bracket content inside an unmatched brace-quoted segment is treated as
+      // literal text by the lightweight scanner to reduce false positives.
+      const pairing = issues.filter(issue => [
+        'Possible unmatched brace',
+        'Possible unclosed quote',
+      ].includes(issue.message));
+
+      expect(pairing).to.have.lengthOf(1);
+      expect(pairing.map(issue => issue.line)).to.deep.equal([1]);
+      expect(pairing.map(issue => issue.message)).to.deep.equal([
+        'Possible unmatched brace',
+      ]);
+    });
+
+    it('does not flag a multiline quoted string as an unclosed quote', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set message "first line',
+        'second line"',
+        'puts $message',
+      ]);
+
+      const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
+      expect(quoteIssues).to.have.lengthOf(0);
+    });
+
+    it('ignores quote markers inside comments when detecting unclosed quotes', () => {
+      const issues = collectLightweightSyntaxIssues([
+        '# this is a comment with "quoted text" that should be ignored',
+        'proc test {} {',
+        '  puts done',
+        '}',
+      ]);
+
+      const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
+      expect(quoteIssues).to.have.lengthOf(0);
+    });
+
+    it('does not flag escaped quotes inside a string as an unclosed quote', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set message "He said \"hello\" and left"',
+        'puts $message',
+      ]);
+
+      const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
+      expect(quoteIssues).to.have.lengthOf(0);
+    });
+
+    it('does not flag bracket mismatch inside a brace-quoted block', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set script {',
+        '  if {[llength $items] > 0} {',
+        '    puts [join $items ","]',
+        '  }',
+        '}',
+      ]);
+
+      const bracketIssues = issues.filter(issue => issue.message === 'Possible unmatched bracket');
+      expect(bracketIssues).to.have.lengthOf(0);
+    });
+
+    it('does not lose closing braces after inline hash text', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {} {',
+        '  if {1} { # inline hash text should not end parsing',
+        '    puts ok',
+        '  }',
+        '}',
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(issue => issue.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(0);
+    });
+
+    it('does not treat quotes inside brace-quoted words as unclosed strings', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set mapping {',
+        '  {"} &quot;',
+        '  {\'} &apos;',
+        '}',
+      ], { includeUsageAnalysis: false });
+
+      const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
+      expect(quoteIssues).to.have.lengthOf(0);
+    });
+  });
+
+  describe('False-positive regression fixes', () => {
+    // Fix: isCommentStart — # is only a comment at command boundaries
+    it('does not treat a mid-word hash as a comment in brace scanning', () => {
+      // "foo#bar" — the # is not at a command boundary, so braces after it still count
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {} {',
+        '  set x foo#bar',
+        '}',
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(0);
+    });
+
+    it('treats ;# as a valid inline comment at top level, not causing false brace errors', () => {
+      // At depth 0, ;# starts a comment so the { after it must not be counted
+      const issues = collectLightweightSyntaxIssues([
+        'set x 1 ;# top-level comment with unclosed { brace',
+        'set y 2',
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: unmatched brace where hash is not a comment', () => {
+      // The hash here is mid-expression; braces still count, so the missing } is a real error
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {} {',
+        '  set x [expr {1 + 1}]',
+        // deliberately missing the closing } for proc
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: top-level-only comment skip — # lines inside open brace blocks must NOT be skipped
+    it('does not skip #-prefixed lines that are inside an open brace block', () => {
+      // This would produce a false negative (missed error) if the comment-skip
+      // was applied inside an open brace context.  The unclosed proc brace must
+      // still be detected even though there is a # line later.
+      const issues = collectLightweightSyntaxIssues([
+        'proc test {} {',
+        '  # this comment is inside the proc body',
+        '  puts "hello"',
+        // missing closing }
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(1);
+    });
+
+    it('true positive: unclosed bracket at top level with an embedded comment', () => {
+      // At depth 0, brackets are counted; the # line is a top-level comment that
+      // must not suppress the preceding unclosed bracket.
+      const issues = collectLightweightSyntaxIssues([
+        'set x [expr {1 + 1}',
+        '# top-level comment between the unclosed bracket and end of file',
+        'set y 2',
+      ], { includeUsageAnalysis: false });
+
+      const bracketIssues = issues.filter(i => i.message === 'Possible unmatched bracket');
+      expect(bracketIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: escaped braces do not count toward brace depth
+    it('does not flag escaped braces as unmatched', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'puts "open brace: \\{"',
+        'puts "close brace: \\}"',
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: real unmatched brace is still detected even when escaped braces are present', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'puts "escaped: \\{"',
+        'proc test {} {',
+        '  puts "hello"',
+        // missing closing }
+      ], { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(i => i.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: escaped brackets do not count toward bracket depth
+    it('does not flag escaped brackets as unmatched', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'puts "open bracket: \\["',
+        'puts "close bracket: \\]"',
+      ], { includeUsageAnalysis: false });
+
+      const bracketIssues = issues.filter(i => i.message === 'Possible unmatched bracket');
+      expect(bracketIssues).to.have.lengthOf(0);
+    });
+
+    // Fix: anchored set regex — "set" appearing mid-word or inside a string is not a definition
+    it('does not register a variable definition when "set" appears mid-word', () => {
+      // "offset" contains "set" but is not a set command
+      const issues = collectLightweightSyntaxIssues([
+        'set offset 10',
+        'puts $offset',
+      ], { includeUsageAnalysis: true });
+
+      // offset is used, so no unused-variable warning expected
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    it('does not treat "set" inside a quoted string as a variable definition', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'puts "please set the value before calling"',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: plain unused variable is still flagged', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set unusedVar 42',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('unusedVar'));
+      expect(unusedIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: anchored proc regex — "proc" in a comment or string does not define a proc
+    it('does not register a proc definition when "proc" appears in a comment', () => {
+      const issues = collectLightweightSyntaxIssues([
+        '# proc notAProc {} {}',
+        'proc realProc {} { puts "hi" }',
+        'realProc',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused proc'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    // Fix: array-element variables (arr($key)) are not flagged as unused
+    it('does not flag array-element variable as unused', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set cache($key) "value"',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: simple variable that is genuinely unused is still flagged', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set simpleUnused "value"',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('simpleUnused'));
+      expect(unusedIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: :: global namespaced variables are not flagged as unused
+    it('does not flag global :: namespaced variable as unused', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set ::myGlobalConfig "production"',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    // Fix: namespaced procs (ns::func) are not flagged as unused
+    it('does not flag namespaced proc as unused', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'proc myns::helper {x} { return $x }',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused proc'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+
+    it('true positive: non-namespaced unused proc is still flagged', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'proc unusedLocalProc {x} { return $x }',
+      ], { includeUsageAnalysis: true });
+
+      const unusedIssues = issues.filter(i => i.message.includes('unusedLocalProc'));
+      expect(unusedIssues).to.have.lengthOf(1);
+    });
+
+    // Fix: dynamic set with $varname as the variable name is not tracked
+    it('does not register a definition for set with a dynamic variable name', () => {
+      const issues = collectLightweightSyntaxIssues([
+        'set $dynamicName "value"',
+      ], { includeUsageAnalysis: true });
+
+      // No unused-variable diagnostic because the dynamic-name set was skipped
+      const unusedIssues = issues.filter(i => i.message.includes('Possible unused variable'));
+      expect(unusedIssues).to.have.lengthOf(0);
+    });
+  });
+
+  describe('Import preloading init script', () => {
+    it('generates source guards for each file and normalizes slashes', () => {
+      const script = buildSyntaxInitScript([
+        'C:\\repo\\pkg\\a.tcl',
+        '/workspace/lib/b.tcl',
+      ]);
+
+      expect(script).to.include('source "C:/repo/pkg/a.tcl"');
+      expect(script).to.include('source "/workspace/lib/b.tcl"');
+      expect(script).to.include('Ignore errors during sourcing');
+      expect((script.match(/if \{\[catch \{source/g) || []).length).to.equal(2);
+    });
+
+    it('is deterministic for sorted input order', () => {
+      const files = ['/z/last.tcl', '/a/first.tcl', '/m/mid.tcl'].sort((a, b) => a.localeCompare(b));
+      const script = buildSyntaxInitScript(files);
+
+      const firstIndex = script.indexOf('/a/first.tcl');
+      const midIndex = script.indexOf('/m/mid.tcl');
+      const lastIndex = script.indexOf('/z/last.tcl');
+
+      expect(firstIndex).to.be.greaterThan(-1);
+      expect(midIndex).to.be.greaterThan(firstIndex);
+      expect(lastIndex).to.be.greaterThan(midIndex);
+    });
+
+    it('includes source-order fixtures in predictable order when sorted', () => {
+      const files = [
+        '/workspace/test/fixtures/syntax-errors/source-order-b.tcl',
+        '/workspace/test/fixtures/syntax-errors/source-order-a.tcl',
+      ].sort((a, b) => a.localeCompare(b));
+
+      const script = buildSyntaxInitScript(files);
+      const aIndex = script.indexOf('source "/workspace/test/fixtures/syntax-errors/source-order-a.tcl"');
+      const bIndex = script.indexOf('source "/workspace/test/fixtures/syntax-errors/source-order-b.tcl"');
+
+      expect(aIndex).to.be.greaterThan(-1);
+      expect(bIndex).to.be.greaterThan(-1);
+      expect(aIndex).to.be.lessThan(bIndex);
     });
   });
 });

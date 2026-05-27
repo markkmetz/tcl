@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { TclIndexer } from './indexer';
 import { BUILTINS } from './builtins';
 import { formatParameters } from './parameterUtils';
+import { isTclKeywordPosition } from './completionUtils';
 
 export class TclPreviewProvider implements vscode.HoverProvider {
   private indexer: TclIndexer;
@@ -21,8 +22,12 @@ async provideHover(
 
   let name = document.getText(wordRange);
 
-  // Check for namespace reference first (e.g., "namespace eval ::ns1")
+  // If the word is in a keyword/option position (e.g., after 'on' in a try block),
+  // it should not produce hover — it is a syntax keyword, not a command or variable.
   const line = document.lineAt(position.line).text;
+  if (isTclKeywordPosition(line, position.character)) { return null; }
+
+  // Check for namespace reference first (e.g., "namespace eval ::ns1")
   const linePrefix = line.substring(0, position.character);
   const namespaceEvalMatch = linePrefix.match(/namespace\s+eval\s+::?([A-Za-z0-9_:]+)$/);
   if (namespaceEvalMatch) {

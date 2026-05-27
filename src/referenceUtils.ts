@@ -40,7 +40,29 @@ const extractWordTokens = (line: string): Array<{ token: string; start: number }
   return out;
 };
 
-export function collectProcMethodReferences(lines: string[], symbols: string[]): SymbolReference[] {
+// Symbols that are TclOO methods can be invoked as "$obj method" or "Class method".
+// In that pattern the method name is NOT at a command boundary (it follows the object/class
+// reference), so we need a secondary position check.
+const isMethodCallPosition = (line: string, tokenStart: number): boolean => {
+  let cursor = tokenStart - 1;
+  // skip whitespace back to the preceding token
+  while (cursor >= 0 && /\s/.test(line[cursor])) cursor--;
+  if (cursor < 0) return false;
+  // walk back to start of the preceding word/token
+  const wordEnd = cursor;
+  while (cursor >= 0 && /[A-Za-z0-9_$]/.test(line[cursor])) cursor--;
+  const precedingToken = line.slice(cursor + 1, wordEnd + 1);
+  // If the preceding token is a variable reference (e.g. $obj) it's a method call
+  if (precedingToken.startsWith('$')) return true;
+  // If the preceding token is itself at a command boundary it could be "ClassName method"
+  return isCommandBoundary(line, cursor + 1);
+};
+
+export function collectProcMethodReferences(
+  lines: string[],
+  symbols: string[],
+  methodSymbols?: Set<string>
+): SymbolReference[] {
   const normalizedSymbols = new Set<string>();
   const symbolShortNames = new Set<string>();
 
@@ -71,8 +93,14 @@ export function collectProcMethodReferences(lines: string[], symbols: string[]):
       // skip variable references like $foo
       if (start > 0 && line[start - 1] === '$') continue;
 
-      // commands should appear at command boundaries in Tcl
-      if (!isCommandBoundary(line, start)) continue;
+      // Determine whether this token is a method (looser call-site matching)
+      const isMethod = methodSymbols
+        ? (methodSymbols.has(tokenNormalized) || methodSymbols.has(tokenShort))
+        : false;
+
+      // commands should appear at command boundaries in Tcl;
+      // TclOO methods also appear after an object reference ($obj method ...)
+      if (!isCommandBoundary(line, start) && !(isMethod && isMethodCallPosition(line, start))) continue;
 
       // don't count declarations as references
       if (isDefinitionLineForToken(line, tokenNormalized)) continue;

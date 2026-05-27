@@ -53,4 +53,20 @@ describe('Proc/method reference utils', () => {
       '2:1'
     ]);
   });
+
+  it('counts TclOO method call sites that follow an object reference', () => {
+    const lines = [
+      'oo::class create C {',
+      '  method run {} { return ok }',
+      '}',
+      'set c [C new]',
+      '$c run'
+    ];
+
+    const refs = collectProcMethodReferences(lines, ['run'], new Set(['run']));
+    expect(refs).to.have.lengthOf(1);
+    expect(refs.map(r => `${r.line}:${r.character}`)).to.deep.equal([
+      '4:3'
+    ]);
+  });
 });

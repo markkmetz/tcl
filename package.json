@@ -3,7 +3,8 @@
   "publisher": "kmetzenterprises",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "1.4.4",
+  "version": "1.4.11",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/markkmetz/tcl.git"
@@ -122,7 +123,6 @@
           "default": true,
           "description": "Show proc/method usage counts as CodeLens (used in N locations)."
         },
-
         "tcl.index.externalPaths": {
           "type": "array",
           "items": {
@@ -134,17 +134,17 @@
         "tcl.runtime.syntaxCheckMode": {
           "type": "string",
           "enum": [
-            "disabled",
+            "lightweight",
             "local",
             "remote"
           ],
-          "default": "disabled",
+          "default": "lightweight",
           "enumDescriptions": [
-            "Disable runtime syntax checking",
+            "Run the lightweight pairing checker while you type",
             "Use local tclsh for syntax checking",
             "Use remote syntax check service (requires server running)"
           ],
-          "markdownDescription": "Choose syntax checking mode:\n- **disabled**: No syntax checking\n- **local**: Use local `tclsh` executable\n- **remote**: Use remote HTTP service\n\nOnly one mode can be active."
+          "markdownDescription": "Choose syntax checking mode:\n- **lightweight**: Run the lightweight brace/bracket/quote checker while you type\n- **local**: Use local `tclsh` executable\n- **remote**: Use remote HTTP service\n\nOnly one mode can be active."
         },
         "tcl.runtime.tclshPath": {
           "type": "string",
@@ -165,6 +165,26 @@
           "maximum": 300,
           "description": "Delay in seconds before running syntax check after document change.",
           "markdownDescription": "Delay in seconds before running syntax check after a document change. Higher values reduce checking frequency (useful for slow remote services). Range: 1-300 seconds."
+        },
+        "tcl.runtime.syntaxCheckImports": {
+          "type": "string",
+          "enum": [
+            "all",
+            "currentOnly"
+          ],
+          "default": "all",
+          "enumDescriptions": [
+            "Preload and source all Tcl files in the workspace before checking the active file.",
+            "Check only the active file without sourcing workspace dependencies."
+          ],
+          "description": "Controls whether syntax checks preload workspace Tcl files or only evaluate the current file.",
+          "markdownDescription": "Controls import preloading during local syntax checks.\n- **all**: source all workspace Tcl files before checking current file\n- **currentOnly**: check only current file content"
+        },
+        "tcl.runtime.lightweightUsageAnalysis": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable lightweight unused variable/proc analysis.",
+          "markdownDescription": "When **false** (default), lightweight syntax checking focuses on structural syntax issues (brace/bracket/quote). Set to **true** to also include heuristic unused variable/proc warnings."
         }
       }
     },
@@ -183,6 +203,14 @@
       {
         "command": "tcl.showIndexerLog",
         "title": "Tcl: Show Indexer Log"
+      },
+      {
+        "command": "tcl.startSyntaxScan",
+        "title": "Tcl: Start Workspace Syntax Scan"
+      },
+      {
+        "command": "tcl.cancelSyntaxScan",
+        "title": "Tcl: Cancel Workspace Syntax Scan"
       }
     ],
     "menus": {
@@ -207,7 +235,11 @@
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "pretest": "npm run compile",
-    "test": "mocha -r ts-node/register 'test/**/*.test.ts'",
+    "test": "mocha -r ts-node/register 'test/*.test.ts'",
+    "test:integration": "npm run compile && tsc -p tsconfig.integration.json && node out/test/runTests.js",
+    "test:integration:lightweight": "npm run compile && tsc -p tsconfig.integration.json && TEST_GREP='Lightweight Syntax Stability Integration' node out/test/runTests.js",
+    "test:integration:keyword-providers": "npm run compile && tsc -p tsconfig.integration.json && TEST_GREP='keyword-position' node out/test/runTests.js",
+    "publish:prerelease": "node scripts/publish-prerelease.js",
     "build": "npm run compile && npm run package",
     "package": "npm version patch --no-git-tag-version && vsce package"
   },

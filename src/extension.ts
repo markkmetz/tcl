@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { TclDefinitionProvider } from './definitionProvider';
 import { TclIndexer } from './indexer';
 import { TclPreviewProvider } from './previewProvider';
@@ -30,6 +32,18 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(showIndexerLogCmd);
 
+  const startSyntaxScanCmd = vscode.commands.registerCommand('tcl.startSyntaxScan', () => {
+    if (syntaxDiagnostics) {
+      syntaxChecker.startBackgroundLightweightScan(syntaxDiagnostics);
+    }
+  });
+  context.subscriptions.push(startSyntaxScanCmd);
+
+  const cancelSyntaxScanCmd = vscode.commands.registerCommand('tcl.cancelSyntaxScan', () => {
+    syntaxChecker.cancelBackgroundLightweightScan();
+  });
+  context.subscriptions.push(cancelSyntaxScanCmd);
+
   const renderIndexerStatus = (status: TclIndexerStatus) => {
     if (status.state === 'indexing') {
       const progress = status.filesTotal
@@ -50,6 +64,18 @@ export function activate(context: vscode.ExtensionContext) {
 
   indexer.onDidLog(msg => indexerLogChannel.appendLine(msg), null, context.subscriptions);
   indexer.onDidStatus(renderIndexerStatus, null, context.subscriptions);
+  indexer.onDidStatus(status => {
+    if (
+      !syntaxBackgroundScanStarted &&
+      status.state === 'idle' &&
+      config().get<string>('tcl.runtime.syntaxCheckMode', 'lightweight') === 'lightweight'
+    ) {
+      syntaxBackgroundScanStarted = true;
+      if (syntaxDiagnostics) {
+        syntaxChecker.startBackgroundLightweightScan(syntaxDiagnostics);
+      }
+    }
+  }, null, context.subscriptions);
 
   indexer.activate(context);
 
@@ -59,6 +85,11 @@ export function activate(context: vscode.ExtensionContext) {
   syntaxStatusBar.text = '$(check) Syntax: idle';
   syntaxStatusBar.show();
   context.subscriptions.push(syntaxStatusBar);
+
+  fs.mkdirSync(context.globalStorageUri.fsPath, { recursive: true });
+  const syntaxTraceLogPath = path.join(context.globalStorageUri.fsPath, 'syntax-check.log');
+
+  let syntaxBackgroundScanStarted = false;
 
   // disposables for optional features
   let defDisposable: vscode.Disposable | undefined;
@@ -72,15 +103,48 @@ export function activate(context: vscode.ExtensionContext) {
   let syntaxDiagnostics: vscode.DiagnosticCollection | undefined;
 
   // syntax checker
-  const syntaxChecker = new TclSyntaxChecker(indexerLogChannel);
+  const syntaxChecker = new TclSyntaxChecker(indexer, indexerLogChannel, syntaxTraceLogPath);
 
   const renderSyntaxStatus = (status: SyntaxCheckStatus) => {
+    if (status.state === 'scanning') {
+      const progress = status.filesTotal
+        ? ` (${status.filesProcessed || 0}/${status.filesTotal})`
+        : '';
+      const cached = typeof status.cachedFiles === 'number' && status.cachedFiles > 0
+        ? `, ${status.cachedFiles} cached`
+        : '';
+      syntaxStatusBar.command = 'tcl.cancelSyntaxScan';
+      syntaxStatusBar.tooltip = 'Cancel workspace syntax scan';
+      syntaxStatusBar.text = `$(sync~spin) Syntax Scan${progress}${cached}`;
+      return;
+    }
+
+    if (status.state === 'cancelled') {
+      const progress = status.filesTotal
+        ? ` (${status.filesProcessed || 0}/${status.filesTotal})`
+        : '';
+      syntaxStatusBar.command = 'tcl.startSyntaxScan';
+      syntaxStatusBar.tooltip = 'Restart workspace syntax scan';
+      syntaxStatusBar.text = `$(circle-slash) Syntax Scan cancelled${progress}`;
+      return;
+    }
+
     if (status.state === 'checking') {
+      syntaxStatusBar.command = undefined;
+      syntaxStatusBar.tooltip = 'Syntax check status';
       syntaxStatusBar.text = `$(sync~spin) Syntax: checking ${status.fileName || ''}`;
       return;
     }
 
     if (status.state === 'complete') {
+      syntaxStatusBar.command = status.filesTotal ? 'tcl.startSyntaxScan' : undefined;
+      syntaxStatusBar.tooltip = status.filesTotal ? 'Start workspace syntax scan' : 'Syntax check status';
+      if (status.filesTotal) {
+        const progress = ` (${status.filesProcessed || 0}/${status.filesTotal})`;
+        const duration = typeof status.durationMs === 'number' ? ` in ${status.durationMs}ms` : '';
+        syntaxStatusBar.text = `$(check) Syntax Scan complete${progress}${duration}`;
+        return;
+      }
       if (status.errorCount === 0) {
         syntaxStatusBar.text = `$(check) Syntax: OK`;
       } else {
@@ -89,6 +153,8 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
+    syntaxStatusBar.command = 'tcl.startSyntaxScan';
+    syntaxStatusBar.tooltip = 'Start workspace syntax scan';
     syntaxStatusBar.text = '$(check) Syntax: idle';
   };
 
@@ -166,64 +232,107 @@ export function activate(context: vscode.ExtensionContext) {
 
   // syntax checking with tclsh
   const setupSyntaxChecking = () => {
-    const mode = config().get<string>('tcl.runtime.syntaxCheckMode', 'local');
+    const mode = config().get<string>('tcl.runtime.syntaxCheckMode', 'lightweight');
+    syntaxChecker.trace(`setupSyntaxChecking mode=${mode}`);
     
-    if (mode !== 'disabled') {
-      if (!syntaxDiagnostics) {
-        syntaxDiagnostics = vscode.languages.createDiagnosticCollection('tcl-syntax');
-        context.subscriptions.push(syntaxDiagnostics);
-      }
+    if (!syntaxDiagnostics) {
+      syntaxDiagnostics = vscode.languages.createDiagnosticCollection('tcl-syntax');
+      context.subscriptions.push(syntaxDiagnostics);
+    }
 
-      if (!syntaxCodeActionDisposable) {
-        syntaxCodeActionDisposable = vscode.languages.registerCodeActionsProvider(
-          { language: 'tcl' },
-          new TclSyntaxCodeActionProvider(),
-          { providedCodeActionKinds: TclSyntaxCodeActionProvider.providedCodeActionKinds }
+    if (!syntaxCodeActionDisposable) {
+      syntaxCodeActionDisposable = vscode.languages.registerCodeActionsProvider(
+        { language: 'tcl' },
+        new TclSyntaxCodeActionProvider(),
+        { providedCodeActionKinds: TclSyntaxCodeActionProvider.providedCodeActionKinds }
+      );
+      context.subscriptions.push(syntaxCodeActionDisposable);
+    }
+
+    // Warn once that local tclsh execution is not sandboxed.
+    // Future releases will use a safe Tcl-script-based checker instead.
+    if (mode === 'local') {
+      const warningKey = 'tcl.syntaxSafetyWarningShown';
+      if (!context.globalState.get<boolean>(warningKey)) {
+        context.globalState.update(warningKey, true);
+        vscode.window.showWarningMessage(
+          'Tcl syntax checking runs your workspace files through a local tclsh process, ' +
+          'which is not sandboxed. Avoid opening untrusted Tcl projects with this feature enabled. '
+          + 'A safer script-based checker is planned for a future release.',
+          'OK'
         );
-        context.subscriptions.push(syntaxCodeActionDisposable);
-      }
-      
-      // Check all open TCL documents on activation
-      const checkAllDocuments = () => {
-        vscode.workspace.textDocuments.forEach(doc => {
-          if (doc.languageId === 'tcl') {
-            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
-          }
-        });
-      };
-      
-      // Check on document save only (immediately, no delay)
-      context.subscriptions.push(
-        vscode.workspace.onDidSaveTextDocument(doc => {
-          if (doc.languageId === 'tcl') {
-            syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
-          }
-        })
-      );
-      
-      // Clear diagnostics on document close
-      context.subscriptions.push(
-        vscode.workspace.onDidCloseTextDocument(doc => {
-          if (doc.languageId === 'tcl') {
-            syntaxDiagnostics!.delete(doc.uri);
-          }
-        })
-      );
-      
-      // Initial check of all open documents
-      checkAllDocuments();
-    } else {
-      // Clear and dispose if disabled
-      if (syntaxDiagnostics) {
-        syntaxDiagnostics.clear();
-        syntaxDiagnostics.dispose();
-        syntaxDiagnostics = undefined;
-      }
-      if (syntaxCodeActionDisposable) {
-        syntaxCodeActionDisposable.dispose();
-        syntaxCodeActionDisposable = undefined;
       }
     }
+
+    const useLightweight = mode === 'lightweight';
+
+    const checkAllDocuments = () => {
+      syntaxChecker.trace(`checkAllDocuments useLightweight=${useLightweight} openDocuments=${vscode.workspace.textDocuments.length}`);
+      vscode.workspace.textDocuments.forEach(doc => {
+        if (doc.languageId !== 'tcl') return;
+        if (useLightweight) {
+          syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
+        } else {
+          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+        }
+      });
+    };
+
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeTextDocument(event => {
+        if (event.document.languageId !== 'tcl') return;
+        syntaxChecker.trace(`onDidChangeTextDocument uri=${event.document.uri.fsPath} version=${event.document.version}`);
+        if (useLightweight) {
+          syntaxChecker.scheduleLightweightCheck(event.document, syntaxDiagnostics!);
+        } else {
+          syntaxChecker.scheduleCheck(event.document, syntaxDiagnostics!, false);
+        }
+      })
+    );
+
+    context.subscriptions.push(
+      vscode.workspace.onDidSaveTextDocument(doc => {
+        if (doc.languageId !== 'tcl') return;
+        syntaxChecker.trace(`onDidSaveTextDocument uri=${doc.uri.fsPath} version=${doc.version}`);
+        if (useLightweight) {
+          syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
+        } else {
+          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+        }
+      })
+    );
+
+    // When a document is opened, run the appropriate syntax check immediately
+    context.subscriptions.push(
+      vscode.workspace.onDidOpenTextDocument(doc => {
+        if (doc.languageId !== 'tcl') return;
+        syntaxChecker.trace(`onDidOpenTextDocument uri=${doc.uri.fsPath} version=${doc.version}`);
+        // Always run the lightweight parser immediately on open
+        syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
+        // If configured mode is not lightweight, also run the configured check
+        if (!useLightweight) {
+          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+        }
+      })
+    );
+
+    context.subscriptions.push(
+      vscode.workspace.onDidCloseTextDocument(doc => {
+        if (doc.languageId === 'tcl') {
+          syntaxChecker.trace(`onDidCloseTextDocument uri=${doc.uri.fsPath} version=${doc.version}`);
+          syntaxDiagnostics!.delete(doc.uri);
+        }
+      })
+    );
+
+    context.subscriptions.push(
+      vscode.window.onDidChangeActiveTextEditor(editor => {
+        const uri = editor?.document.uri.fsPath;
+        syntaxChecker.trace(`onDidChangeActiveTextEditor uri=${uri ?? 'none'}`);
+      })
+    );
+
+    checkAllDocuments();
   };
 
   // initial registration

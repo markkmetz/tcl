@@ -11,6 +11,36 @@
         "reveal": "always",
         "panel": "shared"
       }
+    },
+    {
+      "label": "Test: keyword providers (hover + definition)",
+      "type": "shell",
+      "command": "npm run test:integration:keyword-providers",
+      "group": {
+        "kind": "test",
+        "isDefault": false
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: all integration",
+      "type": "shell",
+      "command": "npm run test:integration",
+      "group": {
+        "kind": "test",
+        "isDefault": false
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": true
+      },
+      "problemMatcher": []
     }
   ]
 }

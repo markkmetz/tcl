@@ -304,12 +304,21 @@ async provideCompletionItems(
 
   // show namespaces first to avoid flooding completions
   const nsList = this.indexer.listNamespaces();
-  const nsPrefix = (prefix.split('::')[0] || '').toLowerCase();
+  // If user typed a leading :: (global qualifier), strip it for filtering but preserve it in insertion
+  const hasGlobalPrefix = prefix.startsWith('::');
+  const nsPrefixRaw = hasGlobalPrefix ? prefix.slice(2) : prefix;
+  const nsPrefix = (nsPrefixRaw.split('::')[0] || '').toLowerCase();
   for (const ns of nsList) {
     if (nsPrefix && !ns.toLowerCase().startsWith(nsPrefix)) continue;
     const nitem = new vscode.CompletionItem(`${ns}::`, vscode.CompletionItemKind.Module);
     nitem.detail = 'Tcl namespace';
-    nitem.insertText = `${ns}::`;
+    // Preserve the leading :: qualifier when the user has already typed it
+    nitem.insertText = hasGlobalPrefix ? `::${ns}::` : `${ns}::`;
+    // Replace the full typed namespace token (including any leading ::) so
+    // accepting completion cannot duplicate colons like ::::::ns::
+    if (wordRange) {
+      nitem.range = wordRange;
+    }
     // trigger suggestions after inserting the namespace so the namespace's functions appear immediately
     nitem.command = { command: 'editor.action.triggerSuggest', title: 'Trigger Suggest' };
     items.push(nitem);

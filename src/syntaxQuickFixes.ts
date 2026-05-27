@@ -1,4 +1,26 @@
 export type SyntaxFixType = 'missing-close-brace' | 'missing-close-bracket' | 'missing-close-quote';
+export type SuppressionKind = 'error' | 'warning' | 'all';
+
+export interface SuppressionOption {
+  key: SuppressionKind;
+  lineTitle: string;
+  fileTitle: string;
+}
+
+export function getSuppressionOptionsForSeverityNumber(severity: number | undefined): SuppressionOption[] {
+  const isWarning = severity === 1; // vscode.DiagnosticSeverity.Warning
+  if (isWarning) {
+    return [
+      { key: 'warning', lineTitle: 'Suppress this warning (line)', fileTitle: 'Suppress all warnings in file' },
+      { key: 'all', lineTitle: 'Suppress all diagnostics (line)', fileTitle: 'Suppress all diagnostics in file' },
+    ];
+  }
+
+  return [
+    { key: 'error', lineTitle: 'Suppress this error (line)', fileTitle: 'Suppress all errors in file' },
+    { key: 'all', lineTitle: 'Suppress all diagnostics (line)', fileTitle: 'Suppress all diagnostics in file' },
+  ];
+}
 
 export function classifySyntaxError(message: string): SyntaxFixType | null {
   const text = message.toLowerCase();
