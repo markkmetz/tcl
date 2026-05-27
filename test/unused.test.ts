@@ -49,6 +49,71 @@ describe('Unused variable and proc detection', () => {
     expect(varIssues).to.have.lengthOf(0);
   });
 
+  it('does not report unused variable when used by lappend command style', () => {
+    const lines = [
+      'set values {}',
+      'lappend values item',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines);
+    const varIssues = issues.filter(i => /Possible unused variable: values/.test(i.message));
+    expect(varIssues).to.have.lengthOf(0);
+  });
+
+  it('does not report unused variable when used by bare textual usage', () => {
+    const lines = [
+      'set total 0',
+      'puts total',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines);
+    const varIssues = issues.filter(i => /Possible unused variable: total/.test(i.message));
+    expect(varIssues).to.have.lengthOf(0);
+  });
+
+  it('does not report unused variable when used by dict set textual usage', () => {
+    const lines = [
+      'set config [dict create]',
+      'dict set config host localhost',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines);
+    const varIssues = issues.filter(i => /Possible unused variable: config/.test(i.message));
+    expect(varIssues).to.have.lengthOf(0);
+  });
+
+  it('does not treat a substring inside another identifier as usage', () => {
+    const lines = [
+      'set total 0',
+      'puts prefix_total',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines);
+    const varIssues = issues.filter(i => /Possible unused variable: total/.test(i.message));
+    expect(varIssues).to.have.lengthOf(1);
+  });
+
+  it('does not report unused variable when used on the same line after set', () => {
+    const lines = [
+      'set combined 1; puts combined',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines);
+    const varIssues = issues.filter(i => /Possible unused variable: combined/.test(i.message));
+    expect(varIssues).to.have.lengthOf(0);
+  });
+
+  it('does not treat a comment-only mention as usage', () => {
+    const lines = [
+      'set commented 1',
+      '# commented appears here but should not count',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines);
+    const varIssues = issues.filter(i => /Possible unused variable: commented/.test(i.message));
+    expect(varIssues).to.have.lengthOf(1);
+  });
+
   it('reports unused variable with token-only range metadata', () => {
     const lines = [
       '  set onlyName 1',
@@ -81,5 +146,17 @@ describe('Unused variable and proc detection', () => {
     const issues = collectLightweightSyntaxIssues(lines);
     const procIssues = issues.filter(i => /helper/.test(i.message));
     expect(procIssues.length).to.be.greaterThan(0);
+  });
+
+  it('does not report dynamic variable pattern usage as unused', () => {
+    const lines = [
+      'set letter a',
+      'set var$letter 0',
+      'puts $vara',
+    ];
+
+    const issues = collectLightweightSyntaxIssues(lines);
+    const varIssues = issues.filter(i => /Possible unused variable: var\$letter/.test(i.message));
+    expect(varIssues).to.have.lengthOf(0);
   });
 });

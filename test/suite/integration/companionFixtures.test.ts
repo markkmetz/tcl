@@ -59,7 +59,7 @@ const expectedSeverityCounts: Record<string, { errors: number; warnings: number 
   'suppression.tcl': { errors: 1, warnings: 0 },
   'syntax-code-action-provider.tcl': { errors: 2, warnings: 1 },
   'syntax-quick-fixes.tcl': { errors: 2, warnings: 1 },
-  'unused.tcl': { errors: 0, warnings: 2 },
+  'unused.tcl': { errors: 0, warnings: 3 },
 };
 
 function countSeverities(diagnostics: vscode.Diagnostic[]): { errors: number; warnings: number } {

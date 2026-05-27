@@ -509,6 +509,33 @@ export function collectLightweightSyntaxIssues(
       }
     }
 
+    const isTextualUsage = (raw: string, defLine: number, defStartChar: number, defEndChar: number): boolean => {
+      const escapedRaw = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const usageRe = new RegExp(`(^|[^A-Za-z0-9_:])${escapedRaw}(?=$|[^A-Za-z0-9_:])`);
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = stripInlineComment(lines[i]);
+        if (line.trim().length === 0) {
+          continue;
+        }
+
+        if (i === defLine) {
+          const before = line.slice(0, defStartChar);
+          const after = line.slice(defEndChar);
+          if (usageRe.test(before) || usageRe.test(after)) {
+            return true;
+          }
+          continue;
+        }
+
+        if (usageRe.test(line)) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
     // Determine unused variables: for each definition, check usages
     for (const vd of varDefs) {
       let used = false;
@@ -521,6 +548,10 @@ export function collectLightweightSyntaxIssues(
         }
       } else {
         if (varUsages.has(vd.raw)) used = true;
+      }
+
+      if (!used && !vd.isPattern && !vd.raw.includes('(')) {
+        used = isTextualUsage(vd.raw, vd.line, vd.startChar, vd.endChar);
       }
 
       if (!used) {
