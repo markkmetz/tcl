@@ -1,5 +1,4 @@
 import { expect } from 'chai';
-import * as vscode from 'vscode';
 
 // Minimal mock TextDocument implementing the properties used by the checker
 class MockTextDocument {
@@ -12,7 +11,7 @@ class MockTextDocument {
   get lineCount() { return this.lines.length; }
   lineAt(i: number) {
     const idx = Math.max(0, Math.min(i, this.lines.length - 1));
-    return { text: this.lines[idx], range: new vscode.Range(idx, 0, idx, this.lines[idx].length) } as any;
+    return { text: this.lines[idx], range: { start: { line: idx, character: 0 }, end: { line: idx, character: this.lines[idx].length } } } as any;
   }
   getText() { return this.lines.join('\n'); }
 }
