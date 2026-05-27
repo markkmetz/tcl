@@ -40,3 +40,19 @@ A simple VS Code extension for Tcl that makes day-to-day editing easier.
 
 - Build: `npm run compile`
 - Test: `npm test`
+
+## Pre-release publish
+
+- Dry-run the flow: `npm run publish:prerelease -- --dry-run`
+- Publish pre-release to VS Code Marketplace: `npm run publish:prerelease`
+
+This script does the following in order:
+
+1. Runs integration tests (`npm run test:integration`)
+2. Bumps version by one patch (for example `1.4.8` -> `1.4.9`)
+3. Publishes with `vsce publish --pre-release`
+
+Notes:
+
+- It does not create a git tag (`--no-git-tag-version`)
+- It is pre-release only and does not perform a stable release

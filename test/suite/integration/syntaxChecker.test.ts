@@ -34,6 +34,16 @@ async function waitForSyntaxStabilization(uri: vscode.Uri, timeoutMs = 7000): Pr
   return vscode.languages.getDiagnostics(uri).filter(d => d.source === 'tcl-syntax');
 }
 
+function hasMissingExternalChecker(diagnostics: vscode.Diagnostic[]): boolean {
+  return diagnostics.some(d => {
+    const message = d.message.toLowerCase();
+    return (
+      message.includes('failed to run tclsh') ||
+      (message.includes('external checker failed') && message.includes('enoent'))
+    );
+  });
+}
+
 suite('Syntax Checker Integration', () => {
   let previousMode: string | undefined;
   let previousImportMode: string | undefined;
@@ -75,8 +85,7 @@ suite('Syntax Checker Integration', () => {
     const diagnostics = await waitForSyntaxDiagnostics(doc.uri);
     assert.ok(diagnostics.length > 0, 'Expected syntax diagnostics for wrong-args fixture');
 
-    const startupFailure = diagnostics.find(d => d.message.includes('Failed to run tclsh'));
-    if (startupFailure) {
+    if (hasMissingExternalChecker(diagnostics)) {
       this.skip();
       return;
     }
@@ -107,8 +116,7 @@ suite('Syntax Checker Integration', () => {
     await doc.save();
     const currentOnlyDiagnostics = await waitForSyntaxDiagnostics(doc.uri);
 
-    const startupFailure = currentOnlyDiagnostics.find(d => d.message.includes('Failed to run tclsh'));
-    if (startupFailure) {
+    if (hasMissingExternalChecker(currentOnlyDiagnostics)) {
       this.skip();
       return;
     }
