@@ -1,0 +1,73 @@
+name: Release VSIX On Main
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: tag-and-release-vsix
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile extension
+        run: npm run compile
+
+      - name: Build VSIX and release metadata
+        id: build
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          SHORT_SHA="${{ github.event.workflow_run.head_sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          TAG="main-v${VERSION}-${SHORT_SHA}"
+
+          npx @vscode/vsce package --no-dependencies
+
+          VSIX_PATH="$(ls -1 *.vsix | head -n 1)"
+          if [[ -z "$VSIX_PATH" ]]; then
+            echo "No VSIX file produced."
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "vsix_path=$VSIX_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release and upload VSIX
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.build.outputs.tag }}
+          target_commitish: ${{ github.event.workflow_run.head_sha }}
+          generate_release_notes: true
+          name: VSIX ${{ steps.build.outputs.tag }}
+          body: |
+            Auto-generated VSIX release for merge/push to main.
+            - Version: ${{ steps.build.outputs.version }}
+            - Commit: ${{ github.event.workflow_run.head_sha }}
+            - Source workflow run: ${{ github.event.workflow_run.html_url }}
+          files: |
+            ${{ steps.build.outputs.vsix_path }}

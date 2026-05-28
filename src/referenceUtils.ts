@@ -14,14 +14,19 @@ const isCommandBoundary = (line: string, tokenStart: number): boolean => {
   return ch === '[' || ch === ';' || ch === '{';
 };
 
-const isDefinitionLineForToken = (line: string, token: string): boolean => {
+const getDefinitionTokenStart = (line: string, token: string): number | undefined => {
   const m = line.match(/^\s*(proc|method)\s+([A-Za-z0-9_:.]+)/);
-  if (!m || !m[2]) return false;
+  if (!m || !m[2]) return undefined;
   const defined = m[2].replace(/^::+/, '');
   const tokenNormalized = token.replace(/^::+/, '');
   const tokenShort = tokenNormalized.split('::').pop() || tokenNormalized;
   const definedShort = defined.split('::').pop() || defined;
-  return defined === tokenNormalized || definedShort === tokenShort;
+  if (defined !== tokenNormalized && definedShort !== tokenShort) {
+    return undefined;
+  }
+
+  const nameStart = line.indexOf(m[2]);
+  return nameStart >= 0 ? nameStart : undefined;
 };
 
 const extractWordTokens = (line: string): Array<{ token: string; start: number }> => {
@@ -102,8 +107,10 @@ export function collectProcMethodReferences(
       // TclOO methods also appear after an object reference ($obj method ...)
       if (!isCommandBoundary(line, start) && !(isMethod && isMethodCallPosition(line, start))) continue;
 
-      // don't count declarations as references
-      if (isDefinitionLineForToken(line, tokenNormalized)) continue;
+      // Don't count the declaration token itself as a reference.
+      // Keep same-line body usages, e.g. `proc foo {} { return [foo] }`.
+      const definitionTokenStart = getDefinitionTokenStart(line, tokenNormalized);
+      if (definitionTokenStart !== undefined && start === definitionTokenStart) continue;
 
       refs.push({ line: lineNum, character: start, symbol: tokenNormalized });
     }

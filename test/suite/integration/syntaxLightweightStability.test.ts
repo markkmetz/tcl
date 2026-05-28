@@ -216,6 +216,57 @@ suite('Lightweight Syntax Stability Integration', () => {
     );
   });
 
+  test('edit and save cycles catch multiple syntax error types', async function () {
+    this.timeout(120000);
+
+    const { doc, editor } = await openFixture('syntax-errors/lightweight-stability-valid.tcl', 600);
+    const baseText = doc.getText();
+
+    const cases: Array<{ label: string; text: string; expectedMessage: RegExp }> = [
+      {
+        label: 'unmatched brace',
+        text: `${baseText}\nif {$enabled} {\n  puts \"missing brace close\"\n`,
+        expectedMessage: /possible unmatched brace/i,
+      },
+      {
+        label: 'unmatched bracket',
+        text: `${baseText}\nset value [expr 1 + 2\n`,
+        expectedMessage: /possible unmatched bracket/i,
+      },
+      {
+        label: 'unclosed quote',
+        text: `${baseText}\nset value \"unterminated\n`,
+        expectedMessage: /possible unclosed quote/i,
+      },
+    ];
+
+    for (const testCase of cases) {
+      await replaceDocumentText(editor, testCase.text);
+      await doc.save();
+
+      const diagnostics = await waitForDiagnosticStability(doc.uri, {
+        timeoutMs: 9000,
+        stableIterations: 3,
+        minWaitMs: 1500,
+      });
+
+      assert.ok(
+        diagnostics.some(d => testCase.expectedMessage.test(d.message)),
+        `Expected ${testCase.label} diagnostic after edit+save, got: ${diagnostics.map(d => d.message).join(' | ')}`
+      );
+    }
+
+    await replaceDocumentText(editor, baseText);
+    await doc.save();
+
+    const recoveredDiagnostics = await waitForDiagnosticStability(doc.uri, {
+      timeoutMs: 9000,
+      stableIterations: 3,
+      minWaitMs: 1500,
+    });
+    assert.strictEqual(recoveredDiagnostics.length, 0, 'Expected diagnostics to clear after restoring valid text and saving');
+  });
+
   test('config flap keeps a single diagnostics transition stream', async function () {
     this.timeout(120000);
 

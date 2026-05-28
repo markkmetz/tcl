@@ -69,4 +69,57 @@ describe('Proc/method reference utils', () => {
       '4:3'
     ]);
   });
+
+  it('counts bracketed self-call inside a single-line proc body', () => {
+    const lines = [
+      'proc foo {} { return [foo] }'
+    ];
+
+    const refs = collectProcMethodReferences(lines, ['foo']);
+    expect(refs).to.have.lengthOf(1);
+    expect(refs.map(r => `${r.line}:${r.character}`)).to.deep.equal([
+      '0:22'
+    ]);
+  });
+
+  it('counts global namespace proc calls with leading ::', () => {
+    const lines = [
+      'proc ::foo {} { return ok }',
+      '::foo',
+      'set x [::foo]'
+    ];
+
+    const refs = collectProcMethodReferences(lines, ['foo', '::foo']);
+    expect(refs).to.have.lengthOf(2);
+    expect(refs.map(r => `${r.line}:${r.character}`)).to.deep.equal([
+      '1:0',
+      '2:7'
+    ]);
+  });
+
+  it('counts proc calls in nested bracket command substitution', () => {
+    const lines = [
+      'proc foo {} { return x }',
+      'set y [string toupper [foo]]'
+    ];
+
+    const refs = collectProcMethodReferences(lines, ['foo']);
+    expect(refs).to.have.lengthOf(1);
+    expect(refs.map(r => `${r.line}:${r.character}`)).to.deep.equal([
+      '1:23'
+    ]);
+  });
+
+  it('counts proc calls inside quoted command substitution', () => {
+    const lines = [
+      'proc foo {} { return x }',
+      'puts "value [foo]"'
+    ];
+
+    const refs = collectProcMethodReferences(lines, ['foo']);
+    expect(refs).to.have.lengthOf(1);
+    expect(refs.map(r => `${r.line}:${r.character}`)).to.deep.equal([
+      '1:13'
+    ]);
+  });
 });
