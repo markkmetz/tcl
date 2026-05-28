@@ -46,10 +46,17 @@ interface CachedLightweightDiagnostics {
 
 type DiagnosticMode = 'full' | 'syntaxOnly';
 type DiagnosticOrigin = 'interactive' | 'background';
+type ScanTrigger = 'change' | 'save' | 'open' | 'startup' | 'manual' | 'background';
+
+interface ScanRequestOptions {
+  mode: DiagnosticMode;
+  trigger: ScanTrigger;
+  immediate?: boolean;
+  extraDelayMs?: number;
+}
 
 export class TclSyntaxChecker {
-  private checkTimeouts: Map<string, NodeJS.Timeout> = new Map();
-  private lightweightCheckTimeouts: Map<string, NodeJS.Timeout> = new Map();
+  private scanTimeouts: Map<string, NodeJS.Timeout> = new Map();
   private checkGeneration: Map<string, number> = new Map();
   private lightweightDiagnosticsCache: Map<string, CachedLightweightDiagnostics> = new Map();
   private lastEmittedDiagnosticCounts: Map<string, number> = new Map();
@@ -807,116 +814,113 @@ export class TclSyntaxChecker {
   }
 
   /**
-   * Schedule a syntax check (immediate on save, debounced on change)
+   * Unified scan request path for full and lightweight checks.
    */
-  scheduleCheck(
+  private requestScan(
     document: vscode.TextDocument,
     diagnosticCollection: vscode.DiagnosticCollection,
-    immediate: boolean = false
+    options: ScanRequestOptions
   ): void {
     const key = document.uri.toString();
-    if (this.checkTimeouts.has(key)) {
-      clearTimeout(this.checkTimeouts.get(key)!);
-      this.checkTimeouts.delete(key);
+    if (this.scanTimeouts.has(key)) {
+      clearTimeout(this.scanTimeouts.get(key)!);
+      this.scanTimeouts.delete(key);
     }
-    
-    // Determine generation for this scheduled/full check so we can ignore stale results
+
+    const immediate = options.immediate === true;
+    const profileLabel = options.mode === 'syntaxOnly' ? 'lightweight' : 'full';
+
+    // Every request increments generation so only the newest request writes diagnostics.
     const gen = (this.checkGeneration.get(key) || 0) + 1;
     this.checkGeneration.set(key, gen);
-    this.log(`Scheduling full check for ${document.fileName}: immediate=${immediate} generation=${gen}`);
+    this.log(
+      `Scheduling ${profileLabel} scan for ${document.fileName}: trigger=${options.trigger} immediate=${immediate} generation=${gen}`
+    );
 
     const expectedGen = gen;
     const doCheck = async () => {
       const fileName = document.fileName.split(/[\/]/).pop() || document.fileName;
       this.setStatus({ state: 'checking', fileName });
-      this.log(`Checking syntax: ${fileName}`);
-      const result = await this.checkSyntax(document);
-      // If another check was scheduled after this one, drop these results as stale
+      this.log(`Checking ${profileLabel} syntax: ${fileName}`);
+      const result = options.mode === 'syntaxOnly'
+        ? await this.checkLightweightSyntax(document)
+        : await this.checkSyntax(document);
       const currentGen = this.checkGeneration.get(key) || 0;
       if (currentGen !== expectedGen) {
-        this.log(`Dropping stale full check results for ${fileName} (gen ${expectedGen} != current ${currentGen})`);
+        this.log(
+          `Dropping stale ${profileLabel} scan results for ${fileName} (gen ${expectedGen} != current ${currentGen})`
+        );
         return;
       }
-      this.applyDiagnostics(`Full check for ${document.fileName}`, key, result.uri, diagnosticCollection, result.diagnostics, 'full');
+
+      const labelPrefix = options.mode === 'syntaxOnly' ? 'Lightweight check' : 'Full check';
+      this.applyDiagnostics(
+        `${labelPrefix} for ${document.fileName}`,
+        key,
+        result.uri,
+        diagnosticCollection,
+        result.diagnostics,
+        options.mode
+      );
       const errorCount = result.diagnostics.length;
-      const status = errorCount === 0 ? 'OK' : `${errorCount} error(s)`;
-      this.log(`Syntax check complete: ${fileName} - ${status}`);
+      const status = errorCount === 0 ? 'OK' : `${errorCount} issue(s)`;
+      this.log(`${profileLabel} syntax check complete: ${fileName} - ${status}`);
       this.setStatus({ state: 'complete', fileName, errorCount });
     };
 
     if (immediate) {
-      // On save: check immediately
       doCheck();
     } else {
-      // On change: debounce
-      const config = vscode.workspace.getConfiguration('tcl.runtime');
-      const delaySeconds = config.get<number>('syntaxCheckDelay', 10);
-      const delayMs = Math.max(1000, delaySeconds * 1000);
-      const to = setTimeout(doCheck, this.debounceMs + delayMs);
-      this.checkTimeouts.set(key, to);
+      const totalDelayMs = this.debounceMs + (options.extraDelayMs || 0);
+      const to = setTimeout(doCheck, totalDelayMs);
+      this.scanTimeouts.set(key, to);
     }
+  }
+
+  /**
+   * Schedule a configured/full syntax check (immediate on save/open, delayed on change)
+   */
+  scheduleCheck(
+    document: vscode.TextDocument,
+    diagnosticCollection: vscode.DiagnosticCollection,
+    immediate: boolean = false,
+    trigger?: ScanTrigger
+  ): void {
+    const config = vscode.workspace.getConfiguration('tcl.runtime');
+    const delaySeconds = config.get<number>('syntaxCheckDelay', 10);
+    const delayMs = Math.max(1000, delaySeconds * 1000);
+    const resolvedTrigger = trigger ?? (immediate ? 'save' : 'change');
+    this.requestScan(document, diagnosticCollection, {
+      mode: 'full',
+      trigger: resolvedTrigger,
+      immediate,
+      extraDelayMs: immediate ? 0 : delayMs,
+    });
   }
 
   scheduleLightweightCheck(
     document: vscode.TextDocument,
     diagnosticCollection: vscode.DiagnosticCollection,
-    immediate: boolean = false
+    immediate: boolean = false,
+    trigger?: ScanTrigger
   ): void {
-    const key = document.uri.toString();
-    if (this.lightweightCheckTimeouts.has(key)) {
-      clearTimeout(this.lightweightCheckTimeouts.get(key)!);
-      this.lightweightCheckTimeouts.delete(key);
-    }
-
-    const doCheck = async () => {
-      const fileName = document.fileName.split(/[\/]/).pop() || document.fileName;
-      this.setStatus({ state: 'checking', fileName });
-      this.log(`Checking lightweight syntax: ${fileName}`);
-      const result = await this.checkLightweightSyntax(document);
-      // Only apply lightweight results if no newer full check was scheduled
-      const currentGen = this.checkGeneration.get(key) || 0;
-      if (currentGen !== capturedGen) {
-        this.log(`Dropping lightweight results for ${fileName} due to newer full check (captured ${capturedGen} != current ${currentGen})`);
-        return;
-      }
-      this.applyDiagnostics(`Lightweight check for ${document.fileName}`, key, result.uri, diagnosticCollection, result.diagnostics, 'syntaxOnly');
-      const errorCount = result.diagnostics.length;
-      const status = errorCount === 0 ? 'OK' : `${errorCount} issue(s)`;
-      this.log(`Lightweight syntax check complete: ${fileName} - ${status}`);
-      this.setStatus({ state: 'complete', fileName, errorCount });
-    };
-
-    // capture current generation so we don't overwrite a later full check
-    const capturedGen = this.checkGeneration.get(key) || 0;
-    this.log(`Scheduling lightweight check for ${document.fileName}: immediate=${immediate} capturedGeneration=${capturedGen}`);
-    if (immediate) {
-      doCheck();
-    } else {
-      const to = setTimeout(async () => {
-        // Re-check generation before running lightweight check
-        const currentGen = this.checkGeneration.get(key) || 0;
-        if (currentGen !== capturedGen) {
-          this.log(`Skipping lightweight check for ${document.fileName} due to newer full check scheduled`);
-          return;
-        }
-        await doCheck();
-      }, this.debounceMs);
-      this.lightweightCheckTimeouts.set(key, to);
-    }
+    const resolvedTrigger = trigger ?? (immediate ? 'save' : 'change');
+    this.requestScan(document, diagnosticCollection, {
+      mode: 'syntaxOnly',
+      trigger: resolvedTrigger,
+      immediate,
+      extraDelayMs: 0,
+    });
   }
 
   /**
    * Clear any pending check
    */
   clearScheduledCheck(): void {
-    for (const [k, to] of this.checkTimeouts.entries()) {
+    for (const [, to] of this.scanTimeouts.entries()) {
       try { clearTimeout(to); } catch { /* ignore */ }
     }
-    this.checkTimeouts.clear();
-    for (const [k, to] of this.lightweightCheckTimeouts.entries()) {
-      try { clearTimeout(to); } catch { /* ignore */ }
-    }
-    this.lightweightCheckTimeouts.clear();
+    this.scanTimeouts.clear();
     this.checkGeneration.clear();
   }
 

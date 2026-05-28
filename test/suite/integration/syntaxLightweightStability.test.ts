@@ -215,4 +215,62 @@ suite('Lightweight Syntax Stability Integration', () => {
       `Background scan changed diagnostics unexpectedly. Before: ${beforeSignature}; after: ${afterSignature}`
     );
   });
+
+  test('config flap keeps a single diagnostics transition stream', async function () {
+    this.timeout(120000);
+
+    const cfg = vscode.workspace.getConfiguration('tcl.runtime');
+    const previousMode = cfg.get<string>('syntaxCheckMode');
+    await cfg.update('syntaxCheckDelay', 1, vscode.ConfigurationTarget.Global);
+
+    try {
+      await vscode.commands.executeCommand('tcl.cancelSyntaxScan');
+
+      const { doc } = await openFixture('syntax-errors/lightweight-stability-unmatched-brace.tcl', 600);
+      const baseline = await waitForDiagnosticStability(doc.uri, {
+        timeoutMs: 9000,
+        stableIterations: 3,
+        minWaitMs: 2200,
+      });
+      assert.ok(baseline.length > 0, 'Expected baseline unmatched brace diagnostics in lightweight mode');
+
+      let maxTransitionsPerWindow = 0;
+      const flaps = 12;
+
+      for (let i = 0; i < flaps; i++) {
+        const mode: 'lightweight' | 'local' = i % 2 === 0 ? 'local' : 'lightweight';
+        await cfg.update('syntaxCheckMode', mode, vscode.ConfigurationTarget.Global);
+
+        const stable = await waitForDiagnosticStability(doc.uri, {
+          timeoutMs: 9000,
+          stableIterations: 2,
+          minWaitMs: 1000,
+        });
+
+        if (mode === 'lightweight') {
+          assert.ok(
+            stable.some(d => /unmatched brace/i.test(d.message)),
+            `Expected unmatched brace diagnostics after switching to lightweight (iteration ${i + 1})`
+          );
+        }
+
+        const signatures = await collectDiagnosticSignatures(doc.uri, 1500, 150);
+        const transitions = countSignatureTransitions(signatures);
+        maxTransitionsPerWindow = Math.max(maxTransitionsPerWindow, transitions);
+
+        assert.ok(
+          transitions <= 1,
+          `Detected multiplied diagnostics transitions after mode=${mode} iteration=${i + 1}: ${signatures.join(' -> ')}`
+        );
+      }
+
+      assert.ok(
+        maxTransitionsPerWindow <= 1,
+        `Expected single transition stream during config flap, saw max ${maxTransitionsPerWindow}`
+      );
+    } finally {
+      await cfg.update('syntaxCheckMode', previousMode, vscode.ConfigurationTarget.Global);
+      await sleep(300);
+    }
+  });
 });

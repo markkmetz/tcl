@@ -101,6 +101,7 @@ export function activate(context: vscode.ExtensionContext) {
   let refDisposable: vscode.Disposable | undefined;
   let syntaxCodeActionDisposable: vscode.Disposable | undefined;
   let syntaxDiagnostics: vscode.DiagnosticCollection | undefined;
+  let syntaxEventDisposables: vscode.Disposable[] = [];
 
   // syntax checker
   const syntaxChecker = new TclSyntaxChecker(indexer, indexerLogChannel, syntaxTraceLogPath);
@@ -234,6 +235,13 @@ export function activate(context: vscode.ExtensionContext) {
   const setupSyntaxChecking = () => {
     const mode = config().get<string>('tcl.runtime.syntaxCheckMode', 'lightweight');
     syntaxChecker.trace(`setupSyntaxChecking mode=${mode}`);
+
+    // Reconfiguring runtime can otherwise stack duplicate listeners.
+    syntaxChecker.cancelBackgroundLightweightScan();
+    for (const disposable of syntaxEventDisposables) {
+      disposable.dispose();
+    }
+    syntaxEventDisposables = [];
     
     if (!syntaxDiagnostics) {
       syntaxDiagnostics = vscode.languages.createDiagnosticCollection('tcl-syntax');
@@ -271,52 +279,51 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.workspace.textDocuments.forEach(doc => {
         if (doc.languageId !== 'tcl') return;
         if (useLightweight) {
-          syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
+          syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true, 'startup');
         } else {
-          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true, 'startup');
         }
       });
     };
 
-    context.subscriptions.push(
+    syntaxEventDisposables.push(
       vscode.workspace.onDidChangeTextDocument(event => {
         if (event.document.languageId !== 'tcl') return;
         syntaxChecker.trace(`onDidChangeTextDocument uri=${event.document.uri.fsPath} version=${event.document.version}`);
         if (useLightweight) {
-          syntaxChecker.scheduleLightweightCheck(event.document, syntaxDiagnostics!);
+          syntaxChecker.scheduleLightweightCheck(event.document, syntaxDiagnostics!, false, 'change');
         } else {
-          syntaxChecker.scheduleCheck(event.document, syntaxDiagnostics!, false);
+          syntaxChecker.scheduleCheck(event.document, syntaxDiagnostics!, false, 'change');
         }
       })
     );
 
-    context.subscriptions.push(
+    syntaxEventDisposables.push(
       vscode.workspace.onDidSaveTextDocument(doc => {
         if (doc.languageId !== 'tcl') return;
         syntaxChecker.trace(`onDidSaveTextDocument uri=${doc.uri.fsPath} version=${doc.version}`);
         if (useLightweight) {
-          syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
+          syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true, 'save');
         } else {
-          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true, 'save');
         }
       })
     );
 
     // When a document is opened, run the appropriate syntax check immediately
-    context.subscriptions.push(
+    syntaxEventDisposables.push(
       vscode.workspace.onDidOpenTextDocument(doc => {
         if (doc.languageId !== 'tcl') return;
         syntaxChecker.trace(`onDidOpenTextDocument uri=${doc.uri.fsPath} version=${doc.version}`);
-        // Always run the lightweight parser immediately on open
-        syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true);
-        // If configured mode is not lightweight, also run the configured check
-        if (!useLightweight) {
-          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true);
+        if (useLightweight) {
+          syntaxChecker.scheduleLightweightCheck(doc, syntaxDiagnostics!, true, 'open');
+        } else {
+          syntaxChecker.scheduleCheck(doc, syntaxDiagnostics!, true, 'open');
         }
       })
     );
 
-    context.subscriptions.push(
+    syntaxEventDisposables.push(
       vscode.workspace.onDidCloseTextDocument(doc => {
         if (doc.languageId === 'tcl') {
           syntaxChecker.trace(`onDidCloseTextDocument uri=${doc.uri.fsPath} version=${doc.version}`);
@@ -325,12 +332,16 @@ export function activate(context: vscode.ExtensionContext) {
       })
     );
 
-    context.subscriptions.push(
+    syntaxEventDisposables.push(
       vscode.window.onDidChangeActiveTextEditor(editor => {
         const uri = editor?.document.uri.fsPath;
         syntaxChecker.trace(`onDidChangeActiveTextEditor uri=${uri ?? 'none'}`);
       })
     );
+
+    for (const disposable of syntaxEventDisposables) {
+      context.subscriptions.push(disposable);
+    }
 
     checkAllDocuments();
   };
