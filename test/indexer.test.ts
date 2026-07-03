@@ -105,7 +105,7 @@ describe('Tcl indexer parsing', () => {
     const lines = content.split(/\r?\n/);
     const result = scanTclLines(lines);
 
-    expect(Array.from(result.fileNamespaces)).to.have.members(['ns3']);
+    expect(Array.from(result.fileNamespaces)).to.have.members(['ns3', 'ns4']);
     expect(Array.from(result.importedNamespaces)).to.have.members(['ns1']);
 
     const names = result.definitions.map(d => d.normalizedFqName).sort();
@@ -369,4 +369,18 @@ describe('Tcl indexer parsing', () => {
     expect(Array.from(result.fileNamespaces)).to.include('Analytics');
     expect(Array.from(result.fileNamespaces)).to.include('DataModel');
   });
+
+  it('counts namespaces from fully qualified proc names with or without leading ::', () => {
+    const lines = [
+      'proc ::ns4::withLeading {x} { return $x }',
+      'proc ns4::withoutLeading {y} { return $y }',
+      'proc ns5::alpha {} { return 1 }'
+    ];
+
+    const result = scanTclLines(lines);
+
+    expect(Array.from(result.fileNamespaces)).to.include('ns4');
+    expect(Array.from(result.fileNamespaces)).to.include('ns5');
+  });
+
 });

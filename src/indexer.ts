@@ -224,6 +224,12 @@ export class TclIndexer {
           defNamespace = namespaceStack[namespaceStack.length - 1];
         }
 
+        // Track namespaces discovered from fully qualified proc/method names,
+        // not only explicit namespace eval blocks.
+        if (defNamespace) {
+          fileNamespaces.add(defNamespace.replace(/^::+/, ''));
+        }
+
         const normalizedFqName = defNamespace ? `${defNamespace}::${simpleName}` : simpleName;
         const fqName = hasLeading ? `::${normalizedFqName}` : normalizedFqName;
         // Use the original name from the line to get correct column position
@@ -460,6 +466,9 @@ export class TclIndexer {
   async listProcs(prefix?: string, document?: vscode.TextDocument): Promise<string[]> {
     const results: string[] = [];
     const seen = new Set<string>();
+    const normalizedPrefix = (prefix || '').replace(/^::+/, '');
+    const prefixLower = normalizedPrefix.toLowerCase();
+    const hasQualifiedPrefix = normalizedPrefix.includes('::');
 
     let fileInfo: { fileNamespaces: Set<string>; importedNamespaces: Set<string>; importedProcs: Set<string> } | undefined;
     if (document) fileInfo = this.fileImports.get(document.uri.toString());
@@ -479,15 +488,17 @@ export class TclIndexer {
     };
 
     for (const [name, arr] of this.procIndex.entries()) {
-      if (prefix && !name.toLowerCase().startsWith(prefix.toLowerCase())) continue;
+      if (normalizedPrefix && !hasQualifiedPrefix && !name.toLowerCase().startsWith(prefixLower)) continue;
       for (const p of arr) {
+        if (normalizedPrefix && hasQualifiedPrefix && !p.normalizedFqName.toLowerCase().startsWith(prefixLower)) continue;
         if (!includeEntry(p)) continue;
         if (!seen.has(p.normalizedFqName)) { seen.add(p.normalizedFqName); results.push(p.normalizedFqName); }
       }
     }
     for (const [name, arr] of this.methodIndex.entries()) {
-      if (prefix && !name.toLowerCase().startsWith(prefix.toLowerCase())) continue;
+      if (normalizedPrefix && !hasQualifiedPrefix && !name.toLowerCase().startsWith(prefixLower)) continue;
       for (const p of arr) {
+        if (normalizedPrefix && hasQualifiedPrefix && !p.normalizedFqName.toLowerCase().startsWith(prefixLower)) continue;
         if (!includeEntry(p)) continue;
         if (!seen.has(p.normalizedFqName)) { seen.add(p.normalizedFqName); results.push(p.normalizedFqName); }
       }

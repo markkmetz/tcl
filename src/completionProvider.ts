@@ -270,11 +270,14 @@ async provideCompletionItems(
     return items;
   }
 
-  // namespace-specific completion: user typed Namespace::partial or ::Namespace::partial
-  const nsMatch = prefix.match(/^(::)?([A-Za-z0-9_:]+)::([A-Za-z0-9_]*)$/);
+  // namespace-specific completion: user typed Namespace::partial with optional
+  // leading global qualifier colons. Normalize leading colons first so odd
+  // prefixes like :::ns are treated consistently.
+  const normalizedPrefix = prefix.replace(/^:+/, '');
+  const nsMatch = normalizedPrefix.match(/^([A-Za-z0-9_:]+)::([A-Za-z0-9_]*)$/);
   if (nsMatch) {
-    const namespace = nsMatch[2].replace(/^::+/, '');
-    const partial = nsMatch[3] || '';
+    const namespace = nsMatch[1].replace(/^::+/, '');
+    const partial = nsMatch[2] || '';
     const nsProcs = this.indexer.listProcsInNamespace(namespace, partial, document);
     for (const fq of nsProcs) {
       const short = fq.split('::').pop() || fq;
@@ -304,9 +307,9 @@ async provideCompletionItems(
 
   // show namespaces first to avoid flooding completions
   const nsList = this.indexer.listNamespaces();
-  // If user typed a leading :: (global qualifier), strip it for filtering but preserve it in insertion
+  // Strip any leading colon run for filtering, but preserve global-style insertion.
   const hasGlobalPrefix = prefix.startsWith('::');
-  const nsPrefixRaw = hasGlobalPrefix ? prefix.slice(2) : prefix;
+  const nsPrefixRaw = prefix.replace(/^:+/, '');
   const nsPrefix = (nsPrefixRaw.split('::')[0] || '').toLowerCase();
   for (const ns of nsList) {
     if (nsPrefix && !ns.toLowerCase().startsWith(nsPrefix)) continue;
