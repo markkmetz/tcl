@@ -7,7 +7,7 @@ import { TclPreviewProvider } from './previewProvider';
 import { TclCompletionProvider } from './completionProvider';
 import { TclSignatureProvider } from './signatureProvider';
 import { TclSemanticProvider } from './semanticProvider';
-import { TclFormatter } from './formatter';
+import { TclFormatter, formatTclDocumentText } from './formatter';
 import { TclSyntaxChecker, SyntaxCheckStatus } from './syntaxChecker';
 import { TclSyntaxCodeActionProvider } from './syntaxCodeActionProvider';
 import { TclCodeLensProvider } from './codeLensProvider';
@@ -358,15 +358,18 @@ export function activate(context: vscode.ExtensionContext) {
   const formatCmd = vscode.commands.registerCommand('tcl.formatDocument', async (resource?: vscode.Uri) => {
     try {
       if (resource && resource.fsPath) {
-        // format the given file (explorer)
         const doc = await vscode.workspace.openTextDocument(resource);
-        const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>('vscode.executeFormatDocumentProvider', doc.uri, {});
-        if (edits && edits.length) {
-          const we = new vscode.WorkspaceEdit();
-          for (const e of edits) we.replace(doc.uri, e.range, e.newText);
-          await vscode.workspace.applyEdit(we);
-          await doc.save();
+        const result = formatTclDocumentText(doc);
+        if (result.error) {
+          void vscode.window.showErrorMessage(result.error);
+          return;
         }
+
+        const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+        const we = new vscode.WorkspaceEdit();
+        we.replace(doc.uri, fullRange, result.text);
+        await vscode.workspace.applyEdit(we);
+        await doc.save();
         return;
       }
 
@@ -374,13 +377,18 @@ export function activate(context: vscode.ExtensionContext) {
       if (!editor) return;
       const doc = editor.document;
       if (doc.languageId !== 'tcl') return;
-      const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>('vscode.executeFormatDocumentProvider', doc.uri, {});
-      if (edits && edits.length) {
-        const we = new vscode.WorkspaceEdit();
-        for (const e of edits) we.replace(doc.uri, e.range, e.newText);
-        await vscode.workspace.applyEdit(we);
-        await doc.save();
+
+      const result = formatTclDocumentText(doc);
+      if (result.error) {
+        void vscode.window.showErrorMessage(result.error);
+        return;
       }
+
+      const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+      const we = new vscode.WorkspaceEdit();
+      we.replace(doc.uri, fullRange, result.text);
+      await vscode.workspace.applyEdit(we);
+      await doc.save();
     } catch (e) {
       // ignore
     }
