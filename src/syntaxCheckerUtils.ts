@@ -79,8 +79,9 @@ export function findBraceErrorLine(lines: string[]): number {
         break;
       }
 
-      // Handle quote toggling (respecting escapes)
-      if (ch === '"' && !isEscaped(line, j) && depth === 0) {
+      // Handle quote toggling (respecting escapes). Braces inside quoted
+      // strings should be treated as literal text at any nesting depth.
+      if (ch === '"' && !isEscaped(line, j)) {
         inQuote = !inQuote;
         continue;
       }
@@ -251,23 +252,8 @@ export function findQuoteErrorLine(lines: string[]): number {
         break;
       }
 
-      if (!inQuote) {
-        if (ch === '{' && !isEscaped(line, j)) {
-          braceDepth++;
-          continue;
-        }
-
-        if (ch === '}' && !isEscaped(line, j) && braceDepth > 0) {
-          braceDepth--;
-          continue;
-        }
-      }
-
-      // Quote delimiters inside brace-quoted regions are literal text.
-      if (braceDepth > 0) {
-        continue;
-      }
-
+      // Track double-quoted strings first so braces inside strings remain
+      // literal and do not corrupt brace-depth bookkeeping.
       if (ch === '"' && !isEscaped(line, j)) {
         inQuote = !inQuote;
         if (inQuote && quoteStartLine === -1) {
@@ -275,6 +261,21 @@ export function findQuoteErrorLine(lines: string[]): number {
         } else if (!inQuote) {
           quoteStartLine = -1;
         }
+        continue;
+      }
+
+      if (inQuote) {
+        continue;
+      }
+
+      if (ch === '{' && !isEscaped(line, j)) {
+        braceDepth++;
+        continue;
+      }
+
+      if (ch === '}' && !isEscaped(line, j) && braceDepth > 0) {
+        braceDepth--;
+        continue;
       }
     }
   }

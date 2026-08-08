@@ -356,6 +356,28 @@ describe('TCL Syntax Checker', () => {
         expect(bracketDepth).to.equal(0);
       }
     });
+
+    it('should have fixture where quoted brackets are treated as literal text', () => {
+      const filePath = path.join(fixturesDir, 'quoted-brackets-valid.tcl');
+      const exists = fs.existsSync(filePath);
+      expect(exists).to.be.true;
+
+      if (exists) {
+        const content = fs.readFileSync(filePath, 'utf8');
+        expect(content).to.include('proc quotedBracketValid');
+      }
+    });
+
+    it('should have fixture where unquoted bracket mismatch remains an error', () => {
+      const filePath = path.join(fixturesDir, 'quoted-brackets-invalid.tcl');
+      const exists = fs.existsSync(filePath);
+      expect(exists).to.be.true;
+
+      if (exists) {
+        const content = fs.readFileSync(filePath, 'utf8');
+        expect(content).to.include('set broken [string length "abc"');
+      }
+    });
   });
 
   describe('Remote Checker Format', () => {
@@ -584,6 +606,42 @@ describe('TCL Syntax Checker', () => {
 
       const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
       expect(quoteIssues).to.have.lengthOf(0);
+    });
+
+    it('does not flag unmatched brace in highlighting escaped-quotes fixture', () => {
+      const filePath = path.join(__dirname, 'fixtures', 'highlighting-escaped-quotes.tcl');
+      const content = fs.readFileSync(filePath, 'utf8');
+      const issues = collectLightweightSyntaxIssues(content.split(/\r?\n/), { includeUsageAnalysis: false });
+
+      const braceIssues = issues.filter(issue => issue.message === 'Possible unmatched brace');
+      expect(braceIssues).to.have.lengthOf(0);
+    });
+
+    it('does not flag unclosed quotes in other fixture with brace/bracket chars in strings', () => {
+      const filePath = path.join(__dirname, 'fixtures', 'other.tcl');
+      const content = fs.readFileSync(filePath, 'utf8');
+      const issues = collectLightweightSyntaxIssues(content.split(/\r?\n/), { includeUsageAnalysis: false });
+
+      const quoteIssues = issues.filter(issue => issue.message === 'Possible unclosed quote');
+      expect(quoteIssues).to.have.lengthOf(0);
+    });
+
+    it('does not flag unmatched bracket for bracket characters inside quoted strings from fixture', () => {
+      const filePath = path.join(__dirname, 'fixtures', 'syntax-errors', 'quoted-brackets-valid.tcl');
+      const content = fs.readFileSync(filePath, 'utf8');
+      const issues = collectLightweightSyntaxIssues(content.split(/\r?\n/), { includeUsageAnalysis: false });
+
+      const bracketIssues = issues.filter(issue => issue.message === 'Possible unmatched bracket');
+      expect(bracketIssues).to.have.lengthOf(0);
+    });
+
+    it('still flags unmatched bracket outside quoted strings from fixture', () => {
+      const filePath = path.join(__dirname, 'fixtures', 'syntax-errors', 'quoted-brackets-invalid.tcl');
+      const content = fs.readFileSync(filePath, 'utf8');
+      const issues = collectLightweightSyntaxIssues(content.split(/\r?\n/), { includeUsageAnalysis: false });
+
+      const bracketIssues = issues.filter(issue => issue.message === 'Possible unmatched bracket');
+      expect(bracketIssues).to.have.lengthOf(1);
     });
   });
 
