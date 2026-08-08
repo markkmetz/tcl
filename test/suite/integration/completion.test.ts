@@ -401,6 +401,75 @@ suite('Completion Provider', () => {
       assert.ok(hasGlobalMatch, 'Expected namespace completion for "ns4::" after "::ns4"');
     });
 
+    test('offers namespaced proc completions when only namespace token is typed', async () => {
+      const localTyped = 'ns1';
+      const localDoc = await vscode.workspace.openTextDocument({ language: 'tcl', content: localTyped });
+      await vscode.window.showTextDocument(localDoc);
+      const localPos = new vscode.Position(0, localTyped.length);
+      const localList = await vscode.commands.executeCommand<vscode.CompletionList>(
+        'vscode.executeCompletionItemProvider',
+        localDoc.uri,
+        localPos
+      );
+
+      const localProcItem = localList.items.find(item => {
+        const label = typeof item.label === 'string' ? item.label : item.label.label;
+        return label === 'ns1::foo' && item.kind === vscode.CompletionItemKind.Function;
+      });
+      assert.ok(localProcItem, 'Expected proc completion "ns1::foo" after typing "ns1"');
+
+      const localApplied = applyCompletionToSingleLine(localTyped, localProcItem!, localPos);
+      assert.ok(localApplied.startsWith('ns1::foo'), `Expected insertion to keep local namespace style, got: ${localApplied}`);
+
+      const globalTyped = '::ns1';
+      const globalDoc = await vscode.workspace.openTextDocument({ language: 'tcl', content: globalTyped });
+      await vscode.window.showTextDocument(globalDoc);
+      const globalPos = new vscode.Position(0, globalTyped.length);
+      const globalList = await vscode.commands.executeCommand<vscode.CompletionList>(
+        'vscode.executeCompletionItemProvider',
+        globalDoc.uri,
+        globalPos
+      );
+
+      const globalProcItem = globalList.items.find(item => {
+        const label = typeof item.label === 'string' ? item.label : item.label.label;
+        return label === 'ns1::foo' && item.kind === vscode.CompletionItemKind.Function;
+      });
+      assert.ok(globalProcItem, 'Expected proc completion "ns1::foo" after typing "::ns1"');
+
+      const globalApplied = applyCompletionToSingleLine(globalTyped, globalProcItem!, globalPos);
+      assert.ok(globalApplied.startsWith('::ns1::foo'), `Expected insertion to keep global namespace style, got: ${globalApplied}`);
+    });
+
+    test('returns identical namespaced proc labels for ns and ::ns across multiple namespaces', async () => {
+      const functionLabelsForInput = async (typed: string, expectedPrefix: string): Promise<string[]> => {
+        const scratch = await vscode.workspace.openTextDocument({ language: 'tcl', content: typed });
+        await vscode.window.showTextDocument(scratch);
+        const pos = new vscode.Position(0, typed.length);
+        const list = await vscode.commands.executeCommand<vscode.CompletionList>(
+          'vscode.executeCompletionItemProvider',
+          scratch.uri,
+          pos
+        );
+
+        return list.items
+          .filter(item => item.kind === vscode.CompletionItemKind.Function)
+          .map(item => (typeof item.label === 'string' ? item.label : item.label.label))
+          .filter(label => label.startsWith(`${expectedPrefix}::`))
+          .sort();
+      };
+
+      const ns1Local = await functionLabelsForInput('ns1', 'ns1');
+      const ns1Global = await functionLabelsForInput('::ns1', 'ns1');
+      assert.ok(ns1Local.length > 0, 'Expected namespaced proc completions for "ns1"');
+      assert.deepStrictEqual(ns1Global, ns1Local, 'Expected identical ns1 proc labels for "ns1" and "::ns1"');
+
+      const ns2Local = await functionLabelsForInput('ns2', 'ns2');
+      const ns2Global = await functionLabelsForInput('::ns2', 'ns2');
+      assert.ok(ns2Local.length > 0, 'Expected namespaced proc completions for "ns2"');
+      assert.deepStrictEqual(ns2Global, ns2Local, 'Expected identical ns2 proc labels for "ns2" and "::ns2"');
+    });
+
     test('ignores redundant leading colons when completing namespace names', async () => {
       const redundantTyped = ':::ns4';
       const redundantDoc = await vscode.workspace.openTextDocument({ language: 'tcl', content: redundantTyped });
