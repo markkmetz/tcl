@@ -5,3 +5,4 @@ out/
 *.DS_Store
 .npm-cache/
 test/fixtures-large-generated/*.tcl
+test/generated/

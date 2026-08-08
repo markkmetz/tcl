@@ -11,6 +11,40 @@ interface FormatterCase {
   expected: string;
 }
 
+function visualizeWhitespace(text: string): string {
+  return text.replace(/ /g, '·').replace(/\t/g, '⇥');
+}
+
+function formatDiff(expected: string, actual: string): string {
+  const expectedLines = expected.split(/\r?\n/);
+  const actualLines = actual.split(/\r?\n/);
+  const max = Math.max(expectedLines.length, actualLines.length);
+  const diff: string[] = [];
+
+  for (let i = 0; i < max; i++) {
+    const e = expectedLines[i] ?? '<missing>';
+    const a = actualLines[i] ?? '<missing>';
+    if (e !== a) {
+      diff.push(`line ${i + 1}`);
+      diff.push(`  expected: ${visualizeWhitespace(e)}`);
+      diff.push(`  actual  : ${visualizeWhitespace(a)}`);
+    }
+  }
+
+  return diff.join('\n');
+}
+
+function writeDebugArtifacts(filePath: string, expected: string, actual: string): string {
+  const debugDir = path.join(path.dirname(filePath), 'formatter-debug');
+  fs.mkdirSync(debugDir, { recursive: true });
+  const base = path.basename(filePath, '.tcl');
+  const expectedPath = path.join(debugDir, `${base}.expected.tcl`);
+  const actualPath = path.join(debugDir, `${base}.actual.tcl`);
+  fs.writeFileSync(expectedPath, expected, 'utf8');
+  fs.writeFileSync(actualPath, actual, 'utf8');
+  return debugDir;
+}
+
 function createTempTclFile(rootDir: string, baseName: string, content: string): string {
   const unique = `${baseName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tcl`;
   const filePath = path.join(rootDir, unique);
@@ -27,6 +61,11 @@ suite('Formatter Integration: Generated Files', () => {
   let tempDir: string;
   let previousInsertSpaces: boolean | undefined;
   let previousTabSize: number | undefined;
+  const keptFiles: string[] = [];
+
+  function shouldKeepFiles(): boolean {
+    return process.env.KEEP_FORMATTER_TEST_FILES === '1';
+  }
 
   suiteSetup(async function () {
     this.timeout(20000);
@@ -36,7 +75,17 @@ suite('Formatter Integration: Generated Files', () => {
     previousTabSize = editorCfg.get<number>('tabSize');
     await editorCfg.update('insertSpaces', true, vscode.ConfigurationTarget.Global);
     await editorCfg.update('tabSize', 2, vscode.ConfigurationTarget.Global);
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcl-formatter-int-'));
+    // place generated files under the repository so they are easy to inspect
+    const workspaceRoot = path.resolve(__dirname, '../../../../');
+    const generatedRoot = path.join(workspaceRoot, 'test', 'generated', 'formatter');
+    const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    tempDir = path.join(generatedRoot, runId);
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    if (shouldKeepFiles()) {
+      console.log(`[formatter-test] KEEP_FORMATTER_TEST_FILES=1`);
+      console.log(`[formatter-test] temp dir: ${tempDir}`);
+    }
   });
 
   suiteTeardown(async function () {
@@ -44,6 +93,17 @@ suite('Formatter Integration: Generated Files', () => {
     const editorCfg = vscode.workspace.getConfiguration('editor');
     await editorCfg.update('insertSpaces', previousInsertSpaces, vscode.ConfigurationTarget.Global);
     await editorCfg.update('tabSize', previousTabSize, vscode.ConfigurationTarget.Global);
+
+    if (shouldKeepFiles()) {
+      if (keptFiles.length > 0) {
+        console.log('[formatter-test] generated files:');
+        for (const filePath of keptFiles) {
+          console.log(`[formatter-test]   ${filePath}`);
+        }
+      }
+      return;
+    }
+
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -112,13 +172,24 @@ suite('Formatter Integration: Generated Files', () => {
 
     for (const c of cases) {
       const filePath = createTempTclFile(tempDir, c.name, c.input);
+      if (shouldKeepFiles()) {
+        keptFiles.push(filePath);
+      }
       await runFormatterCommand(filePath);
       const actual = fs.readFileSync(filePath, 'utf8');
-      assert.strictEqual(
-        actual,
-        c.expected,
-        `Formatter output mismatch for case '${c.name}'`,
-      );
+
+      if (actual !== c.expected) {
+        const debugDir = writeDebugArtifacts(filePath, c.expected, actual);
+        assert.fail(
+          [
+            `Formatter output mismatch for case '${c.name}'`,
+            `file: ${filePath}`,
+            `debug artifacts: ${debugDir}`,
+            'diff:',
+            formatDiff(c.expected, actual),
+          ].join('\n'),
+        );
+      }
     }
   });
 
@@ -133,6 +204,9 @@ suite('Formatter Integration: Generated Files', () => {
     ].join('\n');
 
     const filePath = createTempTclFile(tempDir, 'invalid-brackets', invalidInput);
+    if (shouldKeepFiles()) {
+      keptFiles.push(filePath);
+    }
     await runFormatterCommand(filePath);
 
     const after = fs.readFileSync(filePath, 'utf8');
