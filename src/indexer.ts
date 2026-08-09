@@ -61,6 +61,135 @@ export class TclIndexer {
     if (external && external.length) this.setExternalPaths(external, context);
   }
 
+  async reindexDocument(document: vscode.TextDocument, source: string = 'document') {
+    const fileKey = document.uri.toString();
+    this.removeFile(document.uri);
+
+    const lines = document.getText().split(/\r?\n/);
+    const importedNamespaces = new Set<string>();
+    const importedProcs = new Set<string>();
+    const fileNamespaces = new Set<string>();
+    let namespaceStack: string[] = [];
+    let namespaceDepths: number[] = [];
+    let braceDepth = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      const nsStart = line.match(/^\s*namespace\s+eval\s+([A-Za-z0-9_:]+)\s*\{/);
+      if (nsStart) {
+        const n = nsStart[1].replace(/^::+/, '');
+        namespaceStack.push(n);
+        fileNamespaces.add(n);
+        namespaceDepths.push(braceDepth + 1);
+      }
+
+      let openBraces = 0;
+      let closeBraces = 0;
+      let inString = false;
+      for (let c = 0; c < line.length; c++) {
+        const ch = line[c];
+        const prev = c > 0 ? line[c - 1] : '';
+        if (ch === '"' && prev !== '\\') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+        if (ch === '{') openBraces++;
+        else if (ch === '}') closeBraces++;
+      }
+      braceDepth += openBraces - closeBraces;
+
+      while (namespaceDepths.length > 0 && braceDepth < namespaceDepths[namespaceDepths.length - 1]) {
+        namespaceStack.pop();
+        namespaceDepths.pop();
+      }
+
+      const nsImport = line.match(/^\s*namespace\s+import\s+(.*)$/);
+      if (nsImport && nsImport[1]) {
+        const parts = nsImport[1].trim().split(/\s+/);
+        for (const p of parts) {
+          if (p.endsWith('::*')) {
+            const ns = p.replace(/::\*+$/, '');
+            if (ns) importedNamespaces.add(ns.replace(/^::+/, ''));
+          } else if (p.includes('::')) {
+            importedProcs.add(p.replace(/^::+/, ''));
+          }
+        }
+      }
+
+      const def = parseDefinitionLine(line);
+      if (def) {
+        const { type, name, params } = def;
+        const hasLeading = /^::+/.test(name);
+        const cleanName = name.replace(/^::+/, '');
+        let simpleName = cleanName;
+        let defNamespace: string | undefined;
+
+        if (cleanName.includes('::')) {
+          const parts = cleanName.split('::').filter(Boolean);
+          defNamespace = parts.slice(0, -1).join('::');
+          simpleName = parts[parts.length - 1];
+        } else if (namespaceStack.length) {
+          defNamespace = namespaceStack[namespaceStack.length - 1];
+        }
+
+        if (defNamespace) {
+          fileNamespaces.add(defNamespace.replace(/^::+/, ''));
+        }
+
+        const normalizedFqName = defNamespace ? `${defNamespace}::${simpleName}` : simpleName;
+        const fqName = hasLeading ? `::${normalizedFqName}` : normalizedFqName;
+        const nameToFind = name.replace(/^::+/, '');
+        const pos = new vscode.Position(i, line.indexOf(nameToFind));
+        const loc = new vscode.Location(document.uri, pos);
+
+        const arr = this.index.get(simpleName) || [];
+        const exists = arr.findIndex(l => l.uri.toString() === fileKey && l.range.start.line === i);
+        if (exists === -1) {
+          arr.push(loc);
+          this.index.set(simpleName, arr);
+        }
+
+        if (defNamespace) {
+          const normalizedFq = normalizedFqName;
+          const farr = this.index.get(normalizedFq) || [];
+          if (!farr.find(l => l.uri.toString() === fileKey && l.range.start.line === i)) {
+            farr.push(loc);
+            this.index.set(normalizedFq, farr);
+          }
+        }
+
+        const indexMap = type === 'proc' ? this.procIndex : this.methodIndex;
+        const pArr = indexMap.get(simpleName) || [];
+        const pExists = pArr.findIndex(p => p.loc.uri.toString() === fileKey && p.loc.range.start.line === i);
+        if (pExists === -1) {
+          pArr.push({ loc, params, fqName, normalizedFqName, namespace: defNamespace });
+          indexMap.set(simpleName, pArr);
+        }
+      }
+
+      const vm = line.match(/^\s*set\s+([A-Za-z0-9_:.]+)\s+(.*)$/);
+      if (vm && vm[1]) {
+        const vname = vm[1];
+        const rawValue = vm[2] ? vm[2].trim() : '';
+        const vpos = new vscode.Position(i, line.indexOf(vname));
+        const vloc = new vscode.Location(document.uri, vpos);
+
+        const varArr = this.variableIndex.get(vname) || [];
+        const existsVar = varArr.findIndex(v => v.loc.uri.toString() === fileKey && v.loc.range.start.line === i);
+        if (existsVar === -1) {
+          varArr.push({ loc: vloc, value: rawValue });
+          this.variableIndex.set(vname, varArr);
+        }
+      }
+    }
+
+    this.fileImports.set(fileKey, { fileNamespaces, importedNamespaces, importedProcs });
+    this.log(`Reindexed document (${source}): ${document.uri.fsPath}`);
+    this._onDidIndex.fire();
+  }
+
   async buildIndex() {
     const startedAt = Date.now();
     this.log('Starting full index rebuild');

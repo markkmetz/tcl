@@ -79,6 +79,11 @@ export function activate(context: vscode.ExtensionContext) {
 
   indexer.activate(context);
 
+  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+    if (event.document.languageId !== 'tcl') return;
+    void indexer.reindexDocument(event.document, 'text-change');
+  }));
+
   // Syntax checker status bar
   const syntaxStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 89);
   syntaxStatusBar.tooltip = 'Syntax check status';
