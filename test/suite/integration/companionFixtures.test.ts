@@ -34,6 +34,7 @@ const companionFixtures = [
   'syntax-checker.tcl',
   'syntax-code-action-provider.tcl',
   'syntax-quick-fixes.tcl',
+  'tcl-formatter-core.tcl',
   'unused.tcl',
 ];
 
@@ -65,6 +66,7 @@ const expectedSeverityCounts: Record<string, { errors: number; warnings: number 
   'syntax-checker.tcl': { errors: 0, warnings: 0 },
   'syntax-code-action-provider.tcl': { errors: 2, warnings: 1 },
   'syntax-quick-fixes.tcl': { errors: 2, warnings: 1 },
+  'tcl-formatter-core.tcl': { errors: 0, warnings: 0 },
   'unused.tcl': { errors: 0, warnings: 3 },
 };
 
