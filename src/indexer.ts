@@ -838,25 +838,32 @@ export class TclIndexer {
     const short = normalized.split('::').pop() || normalized;
     const sigs = this.getProcSignatures(normalized, document);
 
-    const symbols = new Set<string>([normalized, short]);
-    const targetFq = normalized.includes('::') ? normalized : undefined;
+    const preferredSig = sigs.find(sig => document && sig.loc.uri.toString() === document.uri.toString()) || sigs[0];
+    const preferredFq = preferredSig ? (preferredSig.fqName || '').replace(/^::+/, '') : undefined;
+    const explicitTargetFq = normalized.includes('::') ? normalized : undefined;
+    const scopedTargetFq = explicitTargetFq || (preferredFq && preferredFq.includes('::') ? preferredFq : undefined);
+    const targetFq = scopedTargetFq;
     const targetNamespace = targetFq
       ? (targetFq.split('::').slice(0, -1).join('::') || undefined)
       : undefined;
-    const globalOnlyTarget = !targetFq
-      && sigs.length > 0
+    const targetIsNamespaced = !!targetFq && targetFq.includes('::');
+    const treatAsGlobalTarget = sigs.length > 0
       && sigs.every(s => !(s.fqName || '').replace(/^::+/, '').includes('::'));
+    const targetIsGlobalProc = !!targetFq
+      ? !targetFq.includes('::')
+      : treatAsGlobalTarget;
+    const globalOnlyTarget = !targetFq
+      && treatAsGlobalTarget;
+
+    const symbols = new Set<string>([normalized, short]);
+    if (targetFq) {
+      symbols.add(targetFq);
+      symbols.add(targetFq.split('::').pop() || targetFq);
+    }
+
     // Collect which of the resolved symbols are TclOO methods so the reference
     // scanner can apply the looser "$obj method" call-site detection for them.
     const methodSymbolsSet = new Set<string>();
-    for (const s of sigs) {
-      const fq = (s.fqName || '').replace(/^::+/, '');
-      if (!fq) continue;
-      symbols.add(fq);
-      const shortFq = fq.split('::').pop() || fq;
-      symbols.add(shortFq);
-    }
-    // Mark any symbol that appears in methodIndex as a method symbol
     for (const sym of symbols) {
       if (this.methodIndex.has(sym)) {
         methodSymbolsSet.add(sym);
@@ -879,18 +886,24 @@ export class TclIndexer {
         const fileImports = targetFq ? this.collectFileImports(lines) : undefined;
         const found = collectProcMethodReferences(lines, Array.from(symbols), methodSymbolsSet.size ? methodSymbolsSet : undefined);
         for (const hit of found) {
-          if (targetFq && fileImports) {
-            const lineText = lines[hit.line] || '';
-            const lineNamespace = lineNamespaces[hit.line];
-            if (!this.isReferenceHitForQualifiedTarget(lineText, hit.character, targetFq, targetNamespace, lineNamespace, fileImports)) {
-              continue;
-            }
-          } else if (globalOnlyTarget) {
-            const lineText = lines[hit.line] || '';
-            const lineNamespace = lineNamespaces[hit.line];
-            if (!this.isReferenceHitForGlobalTarget(lineText, hit.character, short, lineNamespace)) {
-              continue;
-            }
+          const lineText = lines[hit.line] || '';
+          const lineNamespace = lineNamespaces[hit.line];
+          const declarationToken = this.readReferenceTokenAt(lineText, hit.character);
+          const isDeclaration = declarationToken && this.isProcDeclarationLine(lineText, declarationToken);
+          if (isDeclaration) {
+            continue;
+          }
+
+          let keep = false;
+          if (targetIsNamespaced && fileImports) {
+            keep = this.isReferenceHitForQualifiedTarget(lineText, hit.character, targetFq!, targetNamespace, lineNamespace, fileImports);
+          } else if (targetIsGlobalProc || globalOnlyTarget) {
+            keep = this.isReferenceHitForGlobalTarget(lineText, hit.character, short, lineNamespace);
+          } else if (targetFq && fileImports) {
+            keep = this.isReferenceHitForQualifiedTarget(lineText, hit.character, targetFq, targetNamespace, lineNamespace, fileImports);
+          }
+          if (!keep) {
+            continue;
           }
           refs.push(new vscode.Location(file, new vscode.Position(hit.line, hit.character)));
         }
@@ -904,9 +917,10 @@ export class TclIndexer {
       const key = `${loc.uri.toString()}:${loc.range.start.line}:${loc.range.start.character}`;
       if (!dedupe.has(key)) dedupe.set(key, loc);
     }
+    const result = Array.from(dedupe.values());
     const elapsed = Date.now() - startTime;
-    this.log(`Code Lens: Found ${dedupe.size} reference(s) for '${normalized}' in ${elapsed}ms`);
-    return Array.from(dedupe.values());
+    this.log(`Code Lens: Found ${result.length} reference(s) for '${normalized}' in ${elapsed}ms`);
+    return result;
   }
 
   private computeLineNamespaces(lines: string[]): Array<string | undefined> {
@@ -1002,17 +1016,30 @@ export class TclIndexer {
     }
 
     const targetNamespaceLower = targetNamespace.toLowerCase();
-    if ((lineNamespace || '').toLowerCase() === targetNamespaceLower) {
-      return true;
-    }
-    if (fileImports.importedProcs.has(targetFqLower)) {
-      return true;
-    }
-    if (fileImports.importedNamespaces.has(targetNamespaceLower)) {
-      return true;
-    }
+    const lineNamespaceLower = (lineNamespace || '').toLowerCase();
 
-    return false;
+    const result = (() => {
+      // Only count the unqualified form when it is resolved in the target namespace,
+      // is imported into the current file, or is a fully global proc.
+      if (lineNamespaceLower === targetNamespaceLower) {
+        return true;
+      }
+
+      if (!lineNamespaceLower) {
+        return false;
+      }
+
+      if (fileImports.importedProcs.has(targetFqLower)) {
+        return true;
+      }
+      if (fileImports.importedNamespaces.has(targetNamespaceLower)) {
+        return true;
+      }
+
+      return false;
+    })();
+
+    return result;
   }
 
   private isReferenceHitForGlobalTarget(
@@ -1037,6 +1064,15 @@ export class TclIndexer {
       end++;
     }
     return line.slice(start, end);
+  }
+
+  private isProcDeclarationLine(line: string, token: string): boolean {
+    const trimmed = line.trimStart();
+    const match = trimmed.match(/^proc\s+([A-Za-z0-9_:.]+)/);
+    if (!match || !match[1]) return false;
+    const declarationName = match[1].replace(/^::+/, '');
+    const tokenName = token.replace(/^::+/, '');
+    return declarationName === tokenName;
   }
 
   private extractDictPairs(content: string): Array<{ key: string; value: string; isDict: boolean; dictKeys?: string[] }> {

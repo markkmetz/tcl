@@ -4,6 +4,7 @@ import {
   openFixture,
   closeAllEditors,
   ensureExtensionActive,
+  sleep,
 } from './helpers';
 
 suite('Definition Provider', () => {
@@ -218,6 +219,8 @@ suite('Definition Provider', () => {
 
       const openedGlobal = await openFixture('lensshadowduplicate-other.tcl');
       globalDoc = openedGlobal.doc;
+
+      await sleep(1000);
     });
 
     function findWordPosition(
@@ -234,6 +237,60 @@ suite('Definition Provider', () => {
       }
       throw new Error(`Could not find line matching ${lineMatcher} in ${doc.uri.fsPath}`);
     }
+
+    test('reference provider reports only shadow namespace references for namespaced proc', async () => {
+      const procPos = findWordPosition(
+        namespacedDoc,
+        /^\s*proc\s+lensShadowDupProc\s+\{\}/,
+        'lensShadowDupProc'
+      );
+
+      const refs = await vscode.commands.executeCommand<vscode.Location[]>(
+        'vscode.executeReferenceProvider',
+        namespacedDoc.uri,
+        procPos,
+        { includeDeclaration: false }
+      );
+
+      assert.ok(Array.isArray(refs), 'Expected reference provider to return an array');
+      const nonDeclarationRefs = refs.filter(ref => !(ref.uri.fsPath.endsWith('lensshadowduplicate.tcl') && ref.range.start.line === 2));
+      const onlyCallSiteRefs = nonDeclarationRefs.filter(ref => ref.range.start.line !== 0);
+
+      assert.deepStrictEqual(
+        onlyCallSiteRefs.map(ref => ref.range.start.line),
+        [6, 10, 13],
+        'Expected namespaced proc references to be the three call-site lines only'
+      );
+
+      const refPaths = onlyCallSiteRefs.map(ref => `${ref.uri.fsPath}:${ref.range.start.line}`);
+      assert.ok(refPaths.every(path => path.includes('lensshadowduplicate.tcl')));
+    });
+
+    test('reference provider reports only global references for unqualified global proc', async () => {
+      const procPos = findWordPosition(
+        globalDoc,
+        /^\s*proc\s+lensShadowDupProc\s+\{\}/,
+        'lensShadowDupProc'
+      );
+
+      const refs = await vscode.commands.executeCommand<vscode.Location[]>(
+        'vscode.executeReferenceProvider',
+        globalDoc.uri,
+        procPos,
+        { includeDeclaration: false }
+      );
+
+      assert.ok(Array.isArray(refs), 'Expected reference provider to return an array');
+      const nonDeclarationRefs = refs.filter(ref => !(ref.uri.fsPath.endsWith('lensshadowduplicate-other.tcl') && ref.range.start.line === 0));
+      assert.strictEqual(
+        nonDeclarationRefs.length,
+        1,
+        `Expected global proc references to stay at 1, got ${nonDeclarationRefs.length}`
+      );
+
+      const refPaths = nonDeclarationRefs.map(ref => `${ref.uri.fsPath}:${ref.range.start.line}`);
+      assert.ok(refPaths.every(path => path.includes('lensshadowduplicate-other.tcl')));
+    });
 
     test('CodeLens usage count stays at 3 for shadow::lensShadowDupProc', async () => {
       const procPos = findWordPosition(
