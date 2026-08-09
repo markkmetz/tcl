@@ -289,5 +289,31 @@ suite('Definition Provider', () => {
       const hasNamespacedDef = normalizedDefs.some(loc => loc.path.endsWith('lensshadowduplicate.tcl'));
       assert.ok(!hasNamespacedDef, 'Did not expect namespaced definition for unqualified global call');
     });
+
+    test('CodeLens usage count stays at 1 for global lensShadowDupProc', async () => {
+      const procPos = findWordPosition(
+        globalDoc,
+        /^\s*proc\s+lensShadowDupProc\s+\{\}/,
+        'lensShadowDupProc'
+      );
+      const procLine = procPos.line;
+
+      const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>(
+        'vscode.executeCodeLensProvider',
+        globalDoc.uri,
+        50
+      );
+
+      assert.ok(Array.isArray(lenses), 'Expected code lens provider to return an array');
+
+      const targetLens = lenses.find(lens => lens.range.start.line === procLine);
+      assert.ok(targetLens, 'Expected a CodeLens for global proc declaration line');
+      assert.ok(targetLens?.command, 'Expected resolved CodeLens command with usage title');
+      assert.strictEqual(
+        targetLens?.command?.title,
+        'used in 1 location',
+        `Expected global proc lens count to be 1, got "${targetLens?.command?.title}"`
+      );
+    });
   });
 });
