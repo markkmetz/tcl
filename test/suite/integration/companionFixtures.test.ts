@@ -50,7 +50,7 @@ const expectedSeverityCounts: Record<string, { errors: number; warnings: number 
   'builtins.tcl': { errors: 0, warnings: 0 },
   'completion-provider.tcl': { errors: 0, warnings: 2 },
   'completion-utils.tcl': { errors: 0, warnings: 0 },
-  'diagnostics-collection.tcl': { errors: 1, warnings: 3 },
+  'diagnostics-collection.tcl': { errors: 0, warnings: 3 },
   'dict-commands.tcl': { errors: 0, warnings: 0 },
   'dicts.tcl': { errors: 0, warnings: 0 },
   'grammar-highlighting.tcl': { errors: 0, warnings: 4 },
