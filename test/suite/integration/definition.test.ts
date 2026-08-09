@@ -207,4 +207,87 @@ suite('Definition Provider', () => {
       );
     });
   });
+
+  suite('Namespace shadowing does not inflate references', () => {
+    let namespacedDoc: vscode.TextDocument;
+    let globalDoc: vscode.TextDocument;
+
+    suiteSetup(async () => {
+      const openedNamespaced = await openFixture('lensshadowduplicate.tcl');
+      namespacedDoc = openedNamespaced.doc;
+
+      const openedGlobal = await openFixture('lensshadowduplicate-other.tcl');
+      globalDoc = openedGlobal.doc;
+    });
+
+    function findWordPosition(
+      doc: vscode.TextDocument,
+      lineMatcher: RegExp,
+      word: string
+    ): vscode.Position {
+      for (let i = 0; i < doc.lineCount; i++) {
+        const text = doc.lineAt(i).text;
+        if (!lineMatcher.test(text)) continue;
+        const col = text.indexOf(word);
+        assert.ok(col !== -1, `Word "${word}" not found on matched line: ${text}`);
+        return new vscode.Position(i, col + 1);
+      }
+      throw new Error(`Could not find line matching ${lineMatcher} in ${doc.uri.fsPath}`);
+    }
+
+    test('CodeLens usage count stays at 3 for shadow::lensShadowDupProc', async () => {
+      const procPos = findWordPosition(
+        namespacedDoc,
+        /^\s*proc\s+lensShadowDupProc\s+\{\}/,
+        'lensShadowDupProc'
+      );
+      const procLine = procPos.line;
+
+      const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>(
+        'vscode.executeCodeLensProvider',
+        namespacedDoc.uri,
+        50
+      );
+
+      assert.ok(Array.isArray(lenses), 'Expected code lens provider to return an array');
+
+      const targetLens = lenses.find(lens => lens.range.start.line === procLine);
+      assert.ok(targetLens, 'Expected a CodeLens for namespaced proc declaration line');
+      assert.ok(targetLens?.command, 'Expected resolved CodeLens command with usage title');
+      assert.strictEqual(
+        targetLens?.command?.title,
+        'used in 3 locations',
+        `Expected namespaced proc lens count to be 3, got "${targetLens?.command?.title}"`
+      );
+    });
+
+    test('F12 on global call resolves to global proc, not shadow namespace proc', async () => {
+      const callPos = findWordPosition(
+        globalDoc,
+        /^\s*lensShadowDupProc\s*$/,
+        'lensShadowDupProc'
+      );
+
+      const defs = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>(
+        'vscode.executeDefinitionProvider',
+        globalDoc.uri,
+        callPos
+      );
+
+      assert.ok(defs && defs.length > 0, 'Expected at least one definition location');
+
+      const normalizedDefs = defs.map(entry => {
+        const loc = entry as vscode.Location;
+        return { path: loc.uri.fsPath, line: loc.range.start.line };
+      });
+
+      const hasGlobalDef = normalizedDefs.some(
+        loc => loc.path.endsWith('lensshadowduplicate-other.tcl') && loc.line === 0
+      );
+      assert.ok(hasGlobalDef, 'Expected global definition in lensshadowduplicate-other.tcl line 0');
+
+      const hasNamespacedDef = normalizedDefs.some(loc => loc.path.endsWith('lensshadowduplicate.tcl'));
+      assert.ok(!hasNamespacedDef, 'Did not expect namespaced definition for unqualified global call');
+    });
+  });
 });

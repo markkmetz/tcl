@@ -1,22 +1,14 @@
-proc some_proc {
-
-}
-
-
 namespace eval shadow {
-
-#used three times
-    proc some_proc {} {
-        
+    # This namespaced proc should resolve only its own call sites.
+    proc lensShadowDupProc {} {
     }
-    #first namespace call
-    some_proc
+
+    # First namespaced call (unqualified inside namespace block)
+    lensShadowDupProc
 }
 
-#second namespace call
-shadow::some_proc
-#third namespace call
-::shadow::some_proc
+# Second namespaced call (qualified)
+shadow::lensShadowDupProc
 
-#first call of not ns
-some_proc
+# Third namespaced call (fully qualified)
+::shadow::lensShadowDupProc

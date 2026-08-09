@@ -710,6 +710,13 @@ export class TclIndexer {
     const sigs = this.getProcSignatures(normalized, document);
 
     const symbols = new Set<string>([normalized, short]);
+    const targetFq = normalized.includes('::') ? normalized : undefined;
+    const targetNamespace = targetFq
+      ? (targetFq.split('::').slice(0, -1).join('::') || undefined)
+      : undefined;
+    const globalOnlyTarget = !targetFq
+      && sigs.length > 0
+      && sigs.every(s => !(s.fqName || '').replace(/^::+/, '').includes('::'));
     // Collect which of the resolved symbols are TclOO methods so the reference
     // scanner can apply the looser "$obj method" call-site detection for them.
     const methodSymbolsSet = new Set<string>();
@@ -739,8 +746,23 @@ export class TclIndexer {
         const bytes = await vscode.workspace.fs.readFile(file);
         const text = Buffer.from(bytes).toString('utf8');
         const lines = text.split(/\r?\n/);
+        const lineNamespaces = (targetFq || globalOnlyTarget) ? this.computeLineNamespaces(lines) : [];
+        const fileImports = targetFq ? this.collectFileImports(lines) : undefined;
         const found = collectProcMethodReferences(lines, Array.from(symbols), methodSymbolsSet.size ? methodSymbolsSet : undefined);
         for (const hit of found) {
+          if (targetFq && fileImports) {
+            const lineText = lines[hit.line] || '';
+            const lineNamespace = lineNamespaces[hit.line];
+            if (!this.isReferenceHitForQualifiedTarget(lineText, hit.character, targetFq, targetNamespace, lineNamespace, fileImports)) {
+              continue;
+            }
+          } else if (globalOnlyTarget) {
+            const lineText = lines[hit.line] || '';
+            const lineNamespace = lineNamespaces[hit.line];
+            if (!this.isReferenceHitForGlobalTarget(lineText, hit.character, short, lineNamespace)) {
+              continue;
+            }
+          }
           refs.push(new vscode.Location(file, new vscode.Position(hit.line, hit.character)));
         }
       } catch {
@@ -756,6 +778,136 @@ export class TclIndexer {
     const elapsed = Date.now() - startTime;
     this.log(`Code Lens: Found ${dedupe.size} reference(s) for '${normalized}' in ${elapsed}ms`);
     return Array.from(dedupe.values());
+  }
+
+  private computeLineNamespaces(lines: string[]): Array<string | undefined> {
+    const lineNamespaces: Array<string | undefined> = [];
+    const namespaceStack: string[] = [];
+    const namespaceDepths: number[] = [];
+    let braceDepth = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const nsStart = line.match(/^\s*namespace\s+eval\s+([A-Za-z0-9_:]+)\s*\{/);
+      if (nsStart) {
+        const ns = nsStart[1].replace(/^::+/, '');
+        namespaceStack.push(ns);
+        namespaceDepths.push(braceDepth + 1);
+      }
+
+      lineNamespaces.push(namespaceStack.length ? namespaceStack[namespaceStack.length - 1] : undefined);
+
+      let openBraces = 0;
+      let closeBraces = 0;
+      let inString = false;
+      for (let c = 0; c < line.length; c++) {
+        const ch = line[c];
+        const prev = c > 0 ? line[c - 1] : '';
+        if (ch === '"' && prev !== '\\') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+        if (ch === '{') openBraces++;
+        else if (ch === '}') closeBraces++;
+      }
+
+      braceDepth += openBraces - closeBraces;
+      while (namespaceDepths.length > 0 && braceDepth < namespaceDepths[namespaceDepths.length - 1]) {
+        namespaceDepths.pop();
+        namespaceStack.pop();
+      }
+    }
+
+    return lineNamespaces;
+  }
+
+  private collectFileImports(lines: string[]): { importedNamespaces: Set<string>; importedProcs: Set<string> } {
+    const importedNamespaces = new Set<string>();
+    const importedProcs = new Set<string>();
+
+    for (const line of lines) {
+      const nsImport = line.match(/^\s*namespace\s+import\s+(.*)$/);
+      if (!nsImport || !nsImport[1]) continue;
+
+      const parts = nsImport[1].trim().split(/\s+/);
+      for (const rawPart of parts) {
+        const part = rawPart.replace(/^::+/, '').toLowerCase();
+        if (!part) continue;
+        if (part.endsWith('::*')) {
+          importedNamespaces.add(part.replace(/::\*+$/, ''));
+        } else if (part.includes('::')) {
+          importedProcs.add(part);
+        }
+      }
+    }
+
+    return { importedNamespaces, importedProcs };
+  }
+
+  private isReferenceHitForQualifiedTarget(
+    line: string,
+    character: number,
+    targetFq: string,
+    targetNamespace: string | undefined,
+    lineNamespace: string | undefined,
+    fileImports: { importedNamespaces: Set<string>; importedProcs: Set<string> }
+  ): boolean {
+    const rawToken = this.readReferenceTokenAt(line, character);
+    if (!rawToken) return false;
+
+    const normalizedToken = rawToken.replace(/^::+/, '');
+    const targetFqLower = targetFq.toLowerCase();
+    const targetShortLower = (targetFq.split('::').pop() || targetFq).toLowerCase();
+
+    if (normalizedToken.includes('::')) {
+      return normalizedToken.toLowerCase() === targetFqLower;
+    }
+
+    if (normalizedToken.toLowerCase() !== targetShortLower) {
+      return false;
+    }
+
+    if (!targetNamespace) {
+      return true;
+    }
+
+    const targetNamespaceLower = targetNamespace.toLowerCase();
+    if ((lineNamespace || '').toLowerCase() === targetNamespaceLower) {
+      return true;
+    }
+    if (fileImports.importedProcs.has(targetFqLower)) {
+      return true;
+    }
+    if (fileImports.importedNamespaces.has(targetNamespaceLower)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private isReferenceHitForGlobalTarget(
+    line: string,
+    character: number,
+    targetShort: string,
+    lineNamespace: string | undefined
+  ): boolean {
+    const rawToken = this.readReferenceTokenAt(line, character);
+    if (!rawToken) return false;
+
+    const normalizedToken = rawToken.replace(/^::+/, '');
+    if (normalizedToken.includes('::')) return false;
+    if (normalizedToken.toLowerCase() !== targetShort.toLowerCase()) return false;
+    if (lineNamespace) return false;
+    return true;
+  }
+
+  private readReferenceTokenAt(line: string, start: number): string {
+    let end = start;
+    while (end < line.length && /[A-Za-z0-9_:.]/.test(line[end])) {
+      end++;
+    }
+    return line.slice(start, end);
   }
 
   private extractDictPairs(content: string): Array<{ key: string; value: string; isDict: boolean; dictKeys?: string[] }> {
