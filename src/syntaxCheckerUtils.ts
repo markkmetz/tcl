@@ -55,10 +55,19 @@ function isCommentStart(line: string, idx: number): boolean {
   return k < 0 || line[k] === ';';
 }
 
+function isScriptBodyCommand(commandName: string | undefined): boolean {
+  if (!commandName) {
+    return false;
+  }
+
+  return /^(proc|if|while|for|foreach|switch|catch|try|namespace|apply|body|class|method|constructor|destructor)$/i.test(commandName);
+}
+
 export function findBraceErrorLine(lines: string[]): number {
   let depth = 0;
   let lastOpenLine = -1;
   let inQuote = false;
+  let literalBraceDepth = 0;
 
   const isEscaped = (line: string, idx: number) => {
     let c = 0;
@@ -68,6 +77,7 @@ export function findBraceErrorLine(lines: string[]): number {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const lineCommandName = line.match(/^\s*([A-Za-z0-9_:.]+)\b/)?.[1];
     if (!inQuote && depth === 0 && /^\s*#/.test(line)) {
       continue;
     }
@@ -77,6 +87,18 @@ export function findBraceErrorLine(lines: string[]): number {
 
       if (!inQuote && depth === 0 && ch === '#' && isCommentStart(line, j)) {
         break;
+      }
+
+      if (literalBraceDepth > 0) {
+        if (ch === '{' && !isEscaped(line, j)) {
+          literalBraceDepth++;
+        } else if (ch === '}' && !isEscaped(line, j)) {
+          literalBraceDepth--;
+          if (literalBraceDepth < 0) {
+            literalBraceDepth = 0;
+          }
+        }
+        continue;
       }
 
       // Handle quote toggling (respecting escapes). Braces inside quoted
@@ -90,8 +112,12 @@ export function findBraceErrorLine(lines: string[]): number {
 
       if (ch === '{') {
         if (isEscaped(line, j)) continue;
-        depth++;
-        lastOpenLine = i;
+        if (depth > 0 || isScriptBodyCommand(lineCommandName)) {
+          depth++;
+          lastOpenLine = i;
+        } else {
+          literalBraceDepth = 1;
+        }
       } else if (ch === '}') {
         if (isEscaped(line, j)) continue;
         depth--;
@@ -168,17 +194,31 @@ export function findBracketErrorLine(lines: string[]): number {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const lineCommandName = line.match(/^\s*([A-Za-z0-9_:.]+)\b/)?.[1];
     if (!state.inQuote && state.braceDepth === 0 && /^\s*#/.test(line)) {
       continue;
     }
     let lineInQuote = state.inQuote;
     let lineBraceDepth = state.braceDepth;
+    let literalBraceDepth = 0;
 
     for (let j = 0; j < line.length; j++) {
       const ch = line[j];
 
       if (!lineInQuote && lineBraceDepth === 0 && ch === '#' && isCommentStart(line, j)) {
         break;
+      }
+
+      if (literalBraceDepth > 0) {
+        if (ch === '{' && !isEscaped(line, j)) {
+          literalBraceDepth++;
+        } else if (ch === '}' && !isEscaped(line, j)) {
+          literalBraceDepth--;
+          if (literalBraceDepth < 0) {
+            literalBraceDepth = 0;
+          }
+        }
+        continue;
       }
 
       // Handle quote toggling (respecting escapes)
@@ -199,8 +239,6 @@ export function findBracketErrorLine(lines: string[]): number {
         continue;
       }
 
-
-
       if (ch === '[') {
         if (isEscaped(line, j)) continue;
         depth++;
@@ -212,7 +250,11 @@ export function findBracketErrorLine(lines: string[]): number {
           return i;
         }
       } else if (ch === '{' && !isEscaped(line, j)) {
-        lineBraceDepth++;
+        if (lineBraceDepth > 0 || isScriptBodyCommand(lineCommandName)) {
+          lineBraceDepth++;
+        } else {
+          literalBraceDepth = 1;
+        }
       } else if (ch === '}' && !isEscaped(line, j) && lineBraceDepth > 0) {
         lineBraceDepth--;
       }
@@ -232,6 +274,7 @@ export function findQuoteErrorLine(lines: string[]): number {
   let inQuote = false;
   let braceDepth = 0;
   let quoteStartLine = -1;
+  let literalBraceDepth = 0;
 
   const isEscaped = (line: string, idx: number) => {
     let c = 0;
@@ -241,6 +284,7 @@ export function findQuoteErrorLine(lines: string[]): number {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const lineCommandName = line.match(/^\s*([A-Za-z0-9_:.]+)\b/)?.[1];
     if (!inQuote && braceDepth === 0 && /^\s*#/.test(line)) {
       continue;
     }
@@ -250,6 +294,18 @@ export function findQuoteErrorLine(lines: string[]): number {
 
       if (!inQuote && braceDepth === 0 && ch === '#' && isCommentStart(line, j)) {
         break;
+      }
+
+      if (literalBraceDepth > 0) {
+        if (ch === '{' && !isEscaped(line, j)) {
+          literalBraceDepth++;
+        } else if (ch === '}' && !isEscaped(line, j)) {
+          literalBraceDepth--;
+          if (literalBraceDepth < 0) {
+            literalBraceDepth = 0;
+          }
+        }
+        continue;
       }
 
       // Track double-quoted strings first so braces inside strings remain
@@ -269,7 +325,11 @@ export function findQuoteErrorLine(lines: string[]): number {
       }
 
       if (ch === '{' && !isEscaped(line, j)) {
-        braceDepth++;
+        if (braceDepth > 0 || isScriptBodyCommand(lineCommandName)) {
+          braceDepth++;
+        } else {
+          literalBraceDepth = 1;
+        }
         continue;
       }
 
@@ -399,7 +459,7 @@ export function collectLightweightSyntaxIssues(
   }
 
   const quoteLine = findQuoteErrorLine(lines);
-  if (quoteLine !== -1) {
+  if (quoteLine !== -1 && braceLine === -1) {
     issues.push({
       line: quoteLine,
       message: 'Possible unclosed quote',
