@@ -427,26 +427,47 @@ export function activate(context: vscode.ExtensionContext) {
     );
     if (answer !== 'Reset') return;
 
+    // Collect all keys under the "tcl" namespace from the VS Code configuration object.
+    // This covers current and any legacy settings from older versions of the extension.
+    const allKeys = new Set<string>();
+
+    // The WorkspaceConfiguration object for 'tcl' exposes all registered sub-keys as own
+    // enumerable properties (excluding the VS Code API methods).
     const cfg = vscode.workspace.getConfiguration('tcl');
-    const keys = [
-      'features.gotoDefinition',
-      'features.hover',
-      'features.completion',
-      'features.signatureHelp',
-      'features.snippets',
-      'features.semanticTokens',
-      'features.codeLens',
-      'index.externalPaths',
-      'runtime.syntaxCheckMode',
-      'runtime.tclshPath',
-      'runtime.remoteUrl',
-      'runtime.syntaxCheckDelay',
-      'runtime.syntaxCheckImports',
-      'runtime.lightweightUsageAnalysis',
-    ];
-    for (const key of keys) {
-      await cfg.update(key, undefined, vscode.ConfigurationTarget.Global);
-      await cfg.update(key, undefined, vscode.ConfigurationTarget.Workspace);
+    const apiProps = new Set(['has', 'get', 'update', 'inspect']);
+    for (const key of Object.keys(cfg)) {
+      if (!apiProps.has(key)) {
+        allKeys.add(key);
+      }
+    }
+
+    // Also sweep the full settings object for any "tcl.*" entries (catches legacy keys not in the
+    // current schema).
+    const fullCfg = vscode.workspace.getConfiguration();
+    const rawFull = fullCfg as unknown as Record<string, unknown>;
+    const tclSection = rawFull['tcl'];
+    if (tclSection && typeof tclSection === 'object') {
+      const flatten = (obj: Record<string, unknown>, prefix: string) => {
+        for (const k of Object.keys(obj)) {
+          const full = prefix ? `${prefix}.${k}` : k;
+          const val = obj[k];
+          if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+            flatten(val as Record<string, unknown>, full);
+          } else {
+            allKeys.add(full);
+          }
+        }
+      };
+      flatten(tclSection as Record<string, unknown>, '');
+    }
+
+    for (const key of allKeys) {
+      try {
+        await cfg.update(key, undefined, vscode.ConfigurationTarget.Global);
+        await cfg.update(key, undefined, vscode.ConfigurationTarget.Workspace);
+      } catch {
+        // ignore keys that cannot be reset (e.g. not writable in this scope)
+      }
     }
     vscode.window.showInformationMessage('Tcl extension settings have been reset to their defaults.');
   });
