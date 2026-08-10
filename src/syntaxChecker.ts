@@ -273,7 +273,12 @@ export class TclSyntaxChecker {
       this.log(`  Using lightweight pairing checker`);
       return this.checkLightweightSyntax(document);
     }
-    
+
+    if (mode === 'disabled') {
+      this.log(`  Syntax checking disabled`);
+      return { uri: document.uri, diagnostics: [] };
+    }
+
     if (mode === 'local') {
       this.log(`  Using local external checker for syntax checking (replacing prior local tclsh behavior)`);
       return this.checkWithExternalScripts(document);
