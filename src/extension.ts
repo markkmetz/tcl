@@ -15,6 +15,15 @@ import { TclReferenceProvider } from './referenceProvider';
 import { TclIndexerStatus } from './indexer';
 
 export function activate(context: vscode.ExtensionContext) {
+  const deprecationWarningKey = 'tcl.deprecationWarningShown';
+  if (!context.globalState.get<boolean>(deprecationWarningKey)) {
+    void context.globalState.update(deprecationWarningKey, true);
+    vscode.window.showWarningMessage(
+      'Mark\'s TCL extension is deprecated. Please use Tcl/Tk, iRules, EDA Tools, or Expect LSP/MSP by Bite Wise Cook instead.',
+      'OK'
+    );
+  }
+
   const indexer = new TclIndexer();
 
   const indexerLogChannel = vscode.window.createOutputChannel('Tcl Indexer');

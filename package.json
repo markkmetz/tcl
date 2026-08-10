@@ -1,8 +1,8 @@
 {
   "name": "marks-tcl-extension",
   "publisher": "kmetzenterprises",
-  "displayName": "Mark's TCL extension",
-  "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
+  "displayName": "Mark's TCL extension (Deprecated)",
+  "description": "Deprecated Tcl extension — use Tcl/Tk, iRules, EDA Tools, or Expect LSP/MSP by Bite Wise Cook instead",
   "version": "1.5.0",
   "license": "MIT",
   "repository": {

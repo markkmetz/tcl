@@ -1,5 +1,13 @@
 # Mark's TCL extension
 
+> **Deprecated:** This extension is no longer maintained.
+>
+> Please switch to one of these alternatives instead:
+> - Tcl/Tk
+> - iRules
+> - EDA Tools
+> - Expect LSP/MSP by Bite Wise Cook
+
 A simple VS Code extension for Tcl that makes day-to-day editing easier.
 
 ## What it does

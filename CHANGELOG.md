@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.0
+
+- Marked the extension as deprecated in the marketplace metadata and documentation.
+- Added a one-time deprecation notice in VS Code that points users to Tcl/Tk, iRules, EDA Tools, and Expect LSP/MSP by Bite Wise Cook.
+
 ## 1.4.7 (Pre-release)
 
 This pre-release includes the following updates:
