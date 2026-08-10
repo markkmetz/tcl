@@ -213,6 +213,10 @@
       {
         "command": "tcl.cancelSyntaxScan",
         "title": "Tcl: Cancel Workspace Syntax Scan"
+      },
+      {
+        "command": "tcl.resetSettings",
+        "title": "Tcl: Reset All Settings to Default"
       }
     ],
     "menus": {

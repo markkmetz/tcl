@@ -419,6 +419,39 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(syntaxTipsCmd);
 
+  const resetSettingsCmd = vscode.commands.registerCommand('tcl.resetSettings', async () => {
+    const answer = await vscode.window.showWarningMessage(
+      'Reset all Tcl extension settings to their defaults? This will remove any customizations from your settings.json.',
+      { modal: true },
+      'Reset'
+    );
+    if (answer !== 'Reset') return;
+
+    const cfg = vscode.workspace.getConfiguration('tcl');
+    const keys = [
+      'features.gotoDefinition',
+      'features.hover',
+      'features.completion',
+      'features.signatureHelp',
+      'features.snippets',
+      'features.semanticTokens',
+      'features.codeLens',
+      'index.externalPaths',
+      'runtime.syntaxCheckMode',
+      'runtime.tclshPath',
+      'runtime.remoteUrl',
+      'runtime.syntaxCheckDelay',
+      'runtime.syntaxCheckImports',
+      'runtime.lightweightUsageAnalysis',
+    ];
+    for (const key of keys) {
+      await cfg.update(key, undefined, vscode.ConfigurationTarget.Global);
+      await cfg.update(key, undefined, vscode.ConfigurationTarget.Workspace);
+    }
+    vscode.window.showInformationMessage('Tcl extension settings have been reset to their defaults.');
+  });
+  context.subscriptions.push(resetSettingsCmd);
+
   // respond to configuration changes
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
     if (e.affectsConfiguration('tcl.features')) registerProviders();
