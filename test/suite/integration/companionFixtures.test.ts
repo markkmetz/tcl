@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   closeAllEditors,
@@ -18,6 +20,7 @@ const companionFixtures = [
   'completion-utils.tcl',
   'diagnostics-collection.tcl',
   'dict-commands.tcl',
+  'dicts.tcl',
   'grammar-highlighting.tcl',
   'indexer.tcl',
   'namespace-resolution.tcl',
@@ -28,8 +31,10 @@ const companionFixtures = [
   'semantic-provider.tcl',
   'semantic-variables.tcl',
   'suppression.tcl',
+  'syntax-checker.tcl',
   'syntax-code-action-provider.tcl',
   'syntax-quick-fixes.tcl',
+  'tcl-formatter-core.tcl',
   'unused.tcl',
 ];
 
@@ -45,8 +50,9 @@ const expectedSeverityCounts: Record<string, { errors: number; warnings: number 
   'builtins.tcl': { errors: 0, warnings: 0 },
   'completion-provider.tcl': { errors: 0, warnings: 2 },
   'completion-utils.tcl': { errors: 0, warnings: 0 },
-  'diagnostics-collection.tcl': { errors: 1, warnings: 3 },
+  'diagnostics-collection.tcl': { errors: 0, warnings: 3 },
   'dict-commands.tcl': { errors: 0, warnings: 0 },
+  'dicts.tcl': { errors: 0, warnings: 0 },
   'grammar-highlighting.tcl': { errors: 0, warnings: 4 },
   'indexer.tcl': { errors: 0, warnings: 0 },
   'namespace-resolution.tcl': { errors: 0, warnings: 0 },
@@ -57,10 +63,42 @@ const expectedSeverityCounts: Record<string, { errors: number; warnings: number 
   'semantic-provider.tcl': { errors: 0, warnings: 0 },
   'semantic-variables.tcl': { errors: 0, warnings: 0 },
   'suppression.tcl': { errors: 1, warnings: 0 },
+  'syntax-checker.tcl': { errors: 0, warnings: 0 },
   'syntax-code-action-provider.tcl': { errors: 2, warnings: 1 },
   'syntax-quick-fixes.tcl': { errors: 2, warnings: 1 },
+  'tcl-formatter-core.tcl': { errors: 0, warnings: 0 },
   'unused.tcl': { errors: 0, warnings: 3 },
 };
+
+const TEST_ROOT = path.resolve(__dirname, '../../../../test');
+const UNIT_TEST_ROOT = TEST_ROOT;
+const COMPANION_FIXTURE_ROOT = path.resolve(TEST_ROOT, 'fixtures/companion');
+const companionHeaderRe = /^#\s*Companion fixture for\s+([^\s]+\.test\.ts)\s*$/i;
+
+function listUnitTests(): string[] {
+  return fs.readdirSync(UNIT_TEST_ROOT)
+    .filter(name => name.endsWith('.test.ts'))
+    .sort();
+}
+
+function listCompanionFixtureFiles(): string[] {
+  return fs.readdirSync(COMPANION_FIXTURE_ROOT)
+    .filter(name => name.endsWith('.tcl'))
+    .sort();
+}
+
+function fixtureToUnitMap(): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const fixture of listCompanionFixtureFiles()) {
+    const fixturePath = path.join(COMPANION_FIXTURE_ROOT, fixture);
+    const firstLine = fs.readFileSync(fixturePath, 'utf8').split(/\r?\n/, 1)[0] || '';
+    const match = firstLine.match(companionHeaderRe);
+    if (match && match[1]) {
+      map.set(fixture, match[1]);
+    }
+  }
+  return map;
+}
 
 function countSeverities(diagnostics: vscode.Diagnostic[]): { errors: number; warnings: number } {
   let errors = 0;
@@ -77,6 +115,43 @@ function countSeverities(diagnostics: vscode.Diagnostic[]): { errors: number; wa
 
 suite('Companion Fixtures Integration', () => {
   let runtimeSnapshot: LightweightRuntimeConfigSnapshot;
+
+  test('verifies unit test parity with companion fixtures and e2e fixture list', () => {
+    const unitTests = listUnitTests();
+    const fixtureFiles = listCompanionFixtureFiles();
+    const mapping = fixtureToUnitMap();
+
+    const mappedUnitTests = new Set(Array.from(mapping.values()));
+    const missingCoverage = unitTests.filter(unit => !mappedUnitTests.has(unit));
+    assert.deepStrictEqual(
+      missingCoverage,
+      [],
+      `Unit tests missing companion fixture coverage: ${missingCoverage.join(', ')}`
+    );
+
+    const fixtureSet = new Set(fixtureFiles);
+    const listedSet = new Set(companionFixtures);
+    const unlistedFixtures = fixtureFiles.filter(name => !listedSet.has(name));
+    const missingFixtureEntries = companionFixtures.filter(name => !fixtureSet.has(name));
+
+    assert.deepStrictEqual(
+      unlistedFixtures,
+      [],
+      `Companion fixtures not included in e2e fixture list: ${unlistedFixtures.join(', ')}`
+    );
+    assert.deepStrictEqual(
+      missingFixtureEntries,
+      [],
+      `E2E companion fixture list references missing files: ${missingFixtureEntries.join(', ')}`
+    );
+
+    const missingSeverityExpectations = companionFixtures.filter(name => !(name in expectedSeverityCounts));
+    assert.deepStrictEqual(
+      missingSeverityExpectations,
+      [],
+      `Missing expected severity counts for fixtures: ${missingSeverityExpectations.join(', ')}`
+    );
+  });
 
   suiteSetup(async function () {
     this.timeout(60000);

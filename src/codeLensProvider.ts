@@ -32,7 +32,14 @@ export class TclCodeLensProvider implements vscode.CodeLensProvider {
     const data = (codeLens as any).data as TclCodeLensData | undefined;
     if (!data) return codeLens;
 
-    const refs = await this.indexer.findProcMethodReferences(data.name);
+    let doc: vscode.TextDocument | undefined;
+    try {
+      doc = await vscode.workspace.openTextDocument(data.uri);
+    } catch {
+      doc = undefined;
+    }
+
+    const refs = await this.indexer.findProcMethodReferences(data.name, doc);
     const count = refs.length;
     const title = `used in ${count} location${count === 1 ? '' : 's'}`;
 

@@ -105,6 +105,38 @@ export function workspaceDiagnosticSignature(): string {
     .join('|');
 }
 
+export async function waitForWorkspaceDiagnosticStability(
+  options: DiagnosticStabilityOptions = {}
+): Promise<string> {
+  const timeoutMs = options.timeoutMs ?? 9000;
+  const intervalMs = options.intervalMs ?? 250;
+  const stableIterations = options.stableIterations ?? 3;
+  const minWaitMs = options.minWaitMs ?? 0;
+
+  const started = Date.now();
+  let previousSignature = '';
+  let unchanged = 0;
+  let latestSignature = '';
+
+  while (Date.now() - started < timeoutMs) {
+    latestSignature = workspaceDiagnosticSignature();
+
+    if (latestSignature === previousSignature) {
+      unchanged += 1;
+      if (unchanged >= stableIterations && Date.now() - started >= minWaitMs) {
+        return latestSignature;
+      }
+    } else {
+      previousSignature = latestSignature;
+      unchanged = 1;
+    }
+
+    await sleep(intervalMs);
+  }
+
+  return latestSignature;
+}
+
 export async function collectWorkspaceDiagnosticSignatures(
   windowMs: number,
   intervalMs = 200

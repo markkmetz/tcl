@@ -3,7 +3,7 @@
   "publisher": "kmetzenterprises",
   "displayName": "Mark's TCL extension",
   "description": "Mark's Tcl extension — Go To Definition, hover, completion and more",
-  "version": "1.4.11",
+  "version": "1.4.14",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -239,6 +239,8 @@
     "test:integration": "npm run compile && tsc -p tsconfig.integration.json && node out/test/runTests.js",
     "test:integration:lightweight": "npm run compile && tsc -p tsconfig.integration.json && TEST_GREP='Lightweight Syntax Stability Integration' node out/test/runTests.js",
     "test:integration:keyword-providers": "npm run compile && tsc -p tsconfig.integration.json && TEST_GREP='keyword-position' node out/test/runTests.js",
+    "test:integration:formatter": "npm run compile && tsc -p tsconfig.integration.json && TEST_GREP='Formatter Integration: Generated Files' node out/test/runTests.js",
+    "test:integration:formatter:headless": "npm run compile && tsc -p tsconfig.integration.json && TEST_GREP='Formatter Integration: Generated Files' xvfb-run -a node out/test/runTests.js",
     "publish:prerelease": "node scripts/publish-prerelease.js",
     "build": "npm run compile && npm run package",
     "package": "npm version patch --no-git-tag-version && vsce package"

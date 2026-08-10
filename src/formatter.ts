@@ -1,36 +1,57 @@
 import * as vscode from 'vscode';
+import { formatTclText } from './tclFormatterCore';
+
+export interface TclFormatterSettings {
+  insertSpaces: boolean;
+  tabSize: number;
+  lineEnding: string;
+}
+
+export function resolveTclFormatterSettings(
+  document: vscode.TextDocument,
+  formattingOptions?: Pick<vscode.FormattingOptions, 'insertSpaces' | 'tabSize'>,
+): TclFormatterSettings {
+  const editorConfig = vscode.workspace.getConfiguration('editor', document.uri);
+  const insertSpaces = typeof formattingOptions?.insertSpaces === 'boolean'
+    ? formattingOptions.insertSpaces
+    : editorConfig.get<boolean>('insertSpaces', true);
+  const tabSize = typeof formattingOptions?.tabSize === 'number'
+    ? formattingOptions.tabSize
+    : editorConfig.get<number>('tabSize', 2);
+
+  return {
+    insertSpaces,
+    tabSize,
+    lineEnding: document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n',
+  };
+}
+
+export function formatTclDocumentText(
+  document: vscode.TextDocument,
+  formattingOptions?: Pick<vscode.FormattingOptions, 'insertSpaces' | 'tabSize'>,
+): { text: string; error?: string } {
+  const settings = resolveTclFormatterSettings(document, formattingOptions);
+  const result = formatTclText(document.getText(), settings);
+
+  if (result.error) {
+    return { text: document.getText(), error: result.error.message };
+  }
+
+  return { text: result.formattedText };
+}
 
 export class TclFormatter implements vscode.DocumentFormattingEditProvider {
-  provideDocumentFormattingEdits(document: vscode.TextDocument): vscode.TextEdit[] {
-    const lines = document.getText().split(/\r?\n/);
-    let indentLevel = 0;
-    const indentUnit = '  ';
-    const out: string[] = [];
-
-    for (let raw of lines) {
-      let line = raw.trim();
-      if (line.length === 0) { out.push(''); continue; }
-
-      // decrease indent if line starts with a closing brace
-      if (line.startsWith('}')) {
-        indentLevel = Math.max(0, indentLevel - 1);
-      }
-
-      const indent = indentUnit.repeat(indentLevel);
-      // normalize spaces around keywords a bit
-      // ensure single space after 'proc' or 'method' and before argument list
-      line = line.replace(/^\s*(proc|method)\s+/, (m, p1) => `${p1} `);
-
-      out.push(indent + line);
-
-      // increase indent if line contains an opening brace at the end or 'namespace eval NAME {'
-      if (/{\s*$/.test(line) || /namespace\s+eval\s+[A-Za-z0-9_:]+\s*\{\s*$/.test(raw)) {
-        indentLevel++;
-      }
+  provideDocumentFormattingEdits(
+    document: vscode.TextDocument,
+    formattingOptions: vscode.FormattingOptions,
+  ): vscode.TextEdit[] {
+    const result = formatTclDocumentText(document, formattingOptions);
+    if (result.error) {
+      void vscode.window.showErrorMessage(result.error);
+      return [];
     }
 
-    const newText = out.join('\n');
     const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
-    return [vscode.TextEdit.replace(fullRange, newText)];
+    return [vscode.TextEdit.replace(fullRange, result.text)];
   }
 }

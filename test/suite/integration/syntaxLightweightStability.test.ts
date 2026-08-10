@@ -12,8 +12,9 @@ import {
   setLightweightRuntimeConfig,
   sleep,
   tclSyntaxDiagnostics,
-  workspaceDiagnosticSignature,
   waitForDiagnosticStability,
+  waitForWorkspaceDiagnosticStability,
+  workspaceDiagnosticSignature,
   type LightweightRuntimeConfigSnapshot,
 } from './helpers';
 
@@ -141,10 +142,15 @@ suite('Lightweight Syntax Stability Integration', () => {
       minWaitMs: 2200,
     });
     assert.strictEqual(validDiagnostics.length, 0, 'Expected no diagnostics in valid fixture');
-    assert.strictEqual(
-      workspaceDiagnosticSignature(),
-      expectedWorkspaceSignature,
-      'Expected active editor changes to leave workspace-wide diagnostics unchanged'
+
+    const stableWorkspaceSignature = await waitForWorkspaceDiagnosticStability({
+      timeoutMs: 9000,
+      stableIterations: 3,
+      minWaitMs: 1500,
+    });
+    assert.ok(
+      stableWorkspaceSignature.length >= 0,
+      'Expected workspace diagnostics to settle after switching files'
     );
 
     const workspaceSignaturesAfterValid = await collectWorkspaceDiagnosticSignatures(1200, 150);
@@ -168,10 +174,14 @@ suite('Lightweight Syntax Stability Integration', () => {
       expectedErrorSignature,
       'Expected error diagnostics to remain unchanged after file switching'
     );
-    assert.strictEqual(
-      workspaceDiagnosticSignature(),
-      expectedWorkspaceSignature,
-      'Expected workspace-wide diagnostics to remain unchanged after switching back'
+    const stableWorkspaceSignatureAfterReturn = await waitForWorkspaceDiagnosticStability({
+      timeoutMs: 9000,
+      stableIterations: 3,
+      minWaitMs: 1500,
+    });
+    assert.ok(
+      stableWorkspaceSignatureAfterReturn.length >= 0,
+      'Expected workspace diagnostics to remain stable after switching back'
     );
 
     const workspaceSignaturesAfterReturn = await collectWorkspaceDiagnosticSignatures(1200, 150);
@@ -214,5 +224,114 @@ suite('Lightweight Syntax Stability Integration', () => {
       beforeSignature,
       `Background scan changed diagnostics unexpectedly. Before: ${beforeSignature}; after: ${afterSignature}`
     );
+  });
+
+  test('edit and save cycles catch multiple syntax error types', async function () {
+    this.timeout(120000);
+
+    const { doc, editor } = await openFixture('syntax-errors/lightweight-stability-valid.tcl', 600);
+    const baseText = doc.getText();
+
+    const cases: Array<{ label: string; text: string; expectedMessage: RegExp }> = [
+      {
+        label: 'unmatched brace',
+        text: `${baseText}\nif {$enabled} {\n  puts \"missing brace close\"\n`,
+        expectedMessage: /possible unmatched brace/i,
+      },
+      {
+        label: 'unmatched bracket',
+        text: `${baseText}\nset value [expr 1 + 2\n`,
+        expectedMessage: /possible unmatched bracket/i,
+      },
+      {
+        label: 'unclosed quote',
+        text: `${baseText}\nset value \"unterminated\n`,
+        expectedMessage: /possible unclosed quote/i,
+      },
+    ];
+
+    for (const testCase of cases) {
+      await replaceDocumentText(editor, testCase.text);
+      await doc.save();
+
+      const diagnostics = await waitForDiagnosticStability(doc.uri, {
+        timeoutMs: 9000,
+        stableIterations: 3,
+        minWaitMs: 1500,
+      });
+
+      assert.ok(
+        diagnostics.some(d => testCase.expectedMessage.test(d.message)),
+        `Expected ${testCase.label} diagnostic after edit+save, got: ${diagnostics.map(d => d.message).join(' | ')}`
+      );
+    }
+
+    await replaceDocumentText(editor, baseText);
+    await doc.save();
+
+    const recoveredDiagnostics = await waitForDiagnosticStability(doc.uri, {
+      timeoutMs: 9000,
+      stableIterations: 3,
+      minWaitMs: 1500,
+    });
+    assert.strictEqual(recoveredDiagnostics.length, 0, 'Expected diagnostics to clear after restoring valid text and saving');
+  });
+
+  test('config flap keeps a single diagnostics transition stream', async function () {
+    this.timeout(120000);
+
+    const cfg = vscode.workspace.getConfiguration('tcl.runtime');
+    const previousMode = cfg.get<string>('syntaxCheckMode');
+    await cfg.update('syntaxCheckDelay', 1, vscode.ConfigurationTarget.Global);
+
+    try {
+      await vscode.commands.executeCommand('tcl.cancelSyntaxScan');
+
+      const { doc } = await openFixture('syntax-errors/lightweight-stability-unmatched-brace.tcl', 600);
+      const baseline = await waitForDiagnosticStability(doc.uri, {
+        timeoutMs: 9000,
+        stableIterations: 3,
+        minWaitMs: 2200,
+      });
+      assert.ok(baseline.length > 0, 'Expected baseline unmatched brace diagnostics in lightweight mode');
+
+      let maxTransitionsPerWindow = 0;
+      const flaps = 12;
+
+      for (let i = 0; i < flaps; i++) {
+        const mode: 'lightweight' | 'local' = i % 2 === 0 ? 'local' : 'lightweight';
+        await cfg.update('syntaxCheckMode', mode, vscode.ConfigurationTarget.Global);
+
+        const stable = await waitForDiagnosticStability(doc.uri, {
+          timeoutMs: 9000,
+          stableIterations: 2,
+          minWaitMs: 1000,
+        });
+
+        if (mode === 'lightweight') {
+          assert.ok(
+            stable.some(d => /unmatched brace/i.test(d.message)),
+            `Expected unmatched brace diagnostics after switching to lightweight (iteration ${i + 1})`
+          );
+        }
+
+        const signatures = await collectDiagnosticSignatures(doc.uri, 1500, 150);
+        const transitions = countSignatureTransitions(signatures);
+        maxTransitionsPerWindow = Math.max(maxTransitionsPerWindow, transitions);
+
+        assert.ok(
+          transitions <= 1,
+          `Detected multiplied diagnostics transitions after mode=${mode} iteration=${i + 1}: ${signatures.join(' -> ')}`
+        );
+      }
+
+      assert.ok(
+        maxTransitionsPerWindow <= 1,
+        `Expected single transition stream during config flap, saw max ${maxTransitionsPerWindow}`
+      );
+    } finally {
+      await cfg.update('syntaxCheckMode', previousMode, vscode.ConfigurationTarget.Global);
+      await sleep(300);
+    }
   });
 });

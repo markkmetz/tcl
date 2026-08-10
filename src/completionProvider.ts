@@ -26,6 +26,7 @@ async provideCompletionItems(
   const items: vscode.CompletionItem[] = [];
   const MAX_GLOBAL_PROCS = 50;
   const prefixLower = prefix.toLowerCase();
+  const hasGlobalPrefix = prefix.startsWith('::');
 
   // Check if we're completing dict variable name after "dict get "
   // Pattern: dict get <cursor> or dict get $<partial>
@@ -270,11 +271,14 @@ async provideCompletionItems(
     return items;
   }
 
-  // namespace-specific completion: user typed Namespace::partial or ::Namespace::partial
-  const nsMatch = prefix.match(/^(::)?([A-Za-z0-9_:]+)::([A-Za-z0-9_]*)$/);
+  // namespace-specific completion: user typed Namespace::partial with optional
+  // leading global qualifier colons. Normalize leading colons first so odd
+  // prefixes like :::ns are treated consistently.
+  const normalizedPrefix = prefix.replace(/^:+/, '');
+  const nsMatch = normalizedPrefix.match(/^([A-Za-z0-9_:]+)::([A-Za-z0-9_]*)$/);
   if (nsMatch) {
-    const namespace = nsMatch[2].replace(/^::+/, '');
-    const partial = nsMatch[3] || '';
+    const namespace = nsMatch[1].replace(/^::+/, '');
+    const partial = nsMatch[2] || '';
     const nsProcs = this.indexer.listProcsInNamespace(namespace, partial, document);
     for (const fq of nsProcs) {
       const short = fq.split('::').pop() || fq;
@@ -302,11 +306,50 @@ async provideCompletionItems(
     return items;
   }
 
+  // If the user has typed only a namespace token (for example "ns1" or "::ns1"),
+  // offer procs within that namespace directly without requiring a trailing "::".
+  const namespaceToken = normalizedPrefix.match(/^([A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*)$/);
+  if (namespaceToken) {
+    const typedNamespace = namespaceToken[1].replace(/^::+/, '');
+    const knownNamespace = this.indexer
+      .listNamespaces()
+      .find(ns => ns.toLowerCase() === typedNamespace.toLowerCase());
+
+    if (knownNamespace) {
+      const nsProcs = this.indexer.listProcsInNamespace(knownNamespace, '', document);
+      for (const fq of nsProcs) {
+        const short = fq.split('::').pop() || fq;
+        const item = new vscode.CompletionItem(fq, vscode.CompletionItemKind.Function);
+        item.detail = `Tcl procedure in namespace ${knownNamespace}`;
+
+        const sigs = this.indexer.getProcSignatures(fq, document);
+        if (sigs.length) {
+          const md = new vscode.MarkdownString();
+          md.appendMarkdown(`**Signature**\n\n`);
+          md.appendMarkdown(sigs.map(s => `- ${s.params.join(' ')} — ${vscode.workspace.asRelativePath(s.loc.uri)}:${s.loc.range.start.line + 1}`).join('\n'));
+          item.documentation = md;
+        }
+
+        const sigWithParams = sigs.find(s => Array.isArray(s.params) && s.params.length > 0);
+        const insertionPrefix = hasGlobalPrefix ? `::${typedNamespace}::` : `${typedNamespace}::`;
+        // Keep VS Code filtering aligned with what the user typed, especially
+        // for global-style prefixes like "::ns1" where labels omit leading ::.
+        item.filterText = `${insertionPrefix}${short}`;
+        item.insertText = new vscode.SnippetString(buildProcSnippet(`${insertionPrefix}${short}`, sigWithParams?.params));
+
+        if (wordRange) {
+          item.range = wordRange;
+        }
+
+        items.push(item);
+      }
+    }
+  }
+
   // show namespaces first to avoid flooding completions
   const nsList = this.indexer.listNamespaces();
-  // If user typed a leading :: (global qualifier), strip it for filtering but preserve it in insertion
-  const hasGlobalPrefix = prefix.startsWith('::');
-  const nsPrefixRaw = hasGlobalPrefix ? prefix.slice(2) : prefix;
+  // Strip any leading colon run for filtering, but preserve global-style insertion.
+  const nsPrefixRaw = prefix.replace(/^:+/, '');
   const nsPrefix = (nsPrefixRaw.split('::')[0] || '').toLowerCase();
   for (const ns of nsList) {
     if (nsPrefix && !ns.toLowerCase().startsWith(nsPrefix)) continue;

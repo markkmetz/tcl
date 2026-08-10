@@ -5,3 +5,4 @@ namespace eval ::ns1 {
 }
 
 # calling foo here at global level
+

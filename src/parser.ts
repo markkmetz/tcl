@@ -158,6 +158,12 @@ export function scanTclLines(lines: string[]): TclScanResult {
         defNamespace = namespaceStack[namespaceStack.length - 1];
       }
 
+      // Track namespaces discovered from fully qualified proc/method names,
+      // not only explicit namespace eval blocks.
+      if (defNamespace) {
+        fileNamespaces.add(defNamespace.replace(/^::+/, ''));
+      }
+
       const normalizedFqName = defNamespace ? `${defNamespace}::${simpleName}` : simpleName;
       const fqName = hasLeading ? `::${normalizedFqName}` : normalizedFqName;
       definitions.push({ type, name: simpleName, params, fqName, normalizedFqName, namespace: defNamespace, line: i });
