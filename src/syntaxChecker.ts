@@ -275,8 +275,8 @@ export class TclSyntaxChecker {
     }
     
     if (mode === 'local') {
-      this.log(`  Using local external checker for syntax checking (replacing prior local tclsh behavior)`);
-      return this.checkWithExternalScripts(document);
+      this.log(`  Using local tclsh for syntax checking`);
+      return this.checkWithLocalTclsh(document);
     } else if (mode === 'remote') {
       this.log(`  Using remote service for syntax checking`);
       return this.checkWithRemoteService(document);
@@ -362,7 +362,8 @@ export class TclSyntaxChecker {
         // Run tclsh with the wrapper script
         const spawnOptions = {
           cwd: path.dirname(document.fileName),
-          timeout: 5000
+          timeout: 5000,
+          shell: process.platform === 'win32'
         };
         this.log(`  Spawning tclsh process:`);
         this.log(`    - Command: ${tclshPath}`);
@@ -546,7 +547,8 @@ export class TclSyntaxChecker {
       const spawnOptions = {
         cwd: path.dirname(document.fileName),
         timeout: 10000,
-        maxBuffer: 10 * 1024 * 1024
+        maxBuffer: 10 * 1024 * 1024,
+        shell: process.platform === 'win32'
       } as any;
 
       child_process.execFile(cmd, args, spawnOptions, (err, stdout, stderr) => {
