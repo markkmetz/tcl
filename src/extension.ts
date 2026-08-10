@@ -262,6 +262,12 @@ export function activate(context: vscode.ExtensionContext) {
       context.subscriptions.push(syntaxCodeActionDisposable);
     }
 
+    if (mode === 'disabled') {
+      syntaxChecker.trace('setupSyntaxChecking: syntax checking disabled');
+      syntaxDiagnostics?.clear();
+      return;
+    }
+
     // Warn once that local tclsh execution is not sandboxed.
     // Future releases will use a safe Tcl-script-based checker instead.
     if (mode === 'local') {
