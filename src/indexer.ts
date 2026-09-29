@@ -233,11 +233,13 @@ export class TclIndexer {
     this._onDidIndex.fire();
   }
 
-  async setExternalPaths(paths: string[], context?: vscode.ExtensionContext) {
+  async setExternalPaths(paths: unknown, context?: vscode.ExtensionContext) {
     // dispose old watchers
     for (const w of this.externalWatchers) { w.dispose(); }
     this.externalWatchers = [];
-    this.externalPaths = paths || [];
+    this.externalPaths = Array.isArray(paths)
+      ? paths.filter((candidate): candidate is string => typeof candidate === 'string')
+      : [];
     this.log(`Configured external index paths: ${this.externalPaths.length}`);
 
     for (const p of this.externalPaths) {

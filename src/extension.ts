@@ -61,17 +61,7 @@ async function resetAllTclSettings(): Promise<void> {
   }
 }
 
-export function activate(context: vscode.ExtensionContext) {
-  // On first install or any version upgrade, silently reset all tcl.* settings so that
-  // stale values from older versions of the extension cannot interfere.
-  const currentVersion: string = context.extension.packageJSON.version ?? '';
-  const storedVersion = context.globalState.get<string>('tcl.lastActivatedVersion', '');
-  if (storedVersion !== currentVersion) {
-    void resetAllTclSettings().then(() => {
-      void context.globalState.update('tcl.lastActivatedVersion', currentVersion);
-    });
-  }
-
+export async function activate(context: vscode.ExtensionContext) {
   const indexer = new TclIndexer();
 
   const indexerLogChannel = vscode.window.createOutputChannel('Tcl Indexer');
