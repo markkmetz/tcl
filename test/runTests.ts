@@ -1,4 +1,6 @@
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { runTests } from '@vscode/test-electron';
 
 async function main() {
@@ -8,6 +10,9 @@ async function main() {
   const workspaceFixtures = process.env.TEST_WORKSPACE_PATH
     ? path.resolve(process.env.TEST_WORKSPACE_PATH)
     : path.resolve(__dirname, '../../test/fixtures');
+  const isolatedUserDataPath = process.env.TEST_WORKSPACE_PATH
+    ? fs.mkdtempSync(path.join(os.tmpdir(), 'tcl-vscode-test-'))
+    : undefined;
 
   try {
     await runTests({
@@ -17,11 +22,16 @@ async function main() {
         workspaceFixtures,
         '--disable-extensions',
         '--disable-workspace-trust',
+        ...(isolatedUserDataPath ? [`--user-data-dir=${isolatedUserDataPath}`] : []),
       ],
     });
   } catch (err) {
     console.error('Failed to run integration tests:', err);
-    process.exit(1);
+    process.exitCode = 1;
+  } finally {
+    if (isolatedUserDataPath) {
+      fs.rmSync(isolatedUserDataPath, { recursive: true, force: true });
+    }
   }
 }
 

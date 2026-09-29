@@ -1,0 +1,8 @@
+{
+  "tcl.runtime.syntaxCheckMode": "unsupported-mode",
+  "tcl.runtime.syntaxCheckDelay": "not-an-integer",
+  "tcl.index.externalPaths": { "length": 1, "stalePreviousVersionValue": true },
+  "tcl.features.lint": true,
+  "tcl.legacy.missingSetting": true,
+  "json.schemaDownload.enable": false
+}
