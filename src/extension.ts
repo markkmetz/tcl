@@ -100,6 +100,7 @@ export function activate(context: vscode.ExtensionContext) {
   let defDisposable: vscode.Disposable | undefined;
   let hoverDisposable: vscode.Disposable | undefined;
   let completionDisposable: vscode.Disposable | undefined;
+  let completionSnippetsEnabled: boolean | undefined;
   let sigDisposable: vscode.Disposable | undefined;
   let semDisposable: vscode.Disposable | undefined;
   let codeLensDisposable: vscode.Disposable | undefined;
@@ -191,12 +192,19 @@ export function activate(context: vscode.ExtensionContext) {
 
     // completion
     if (cfg.completion !== false) {
-      if (!completionDisposable) {
-        const completionProvider = new TclCompletionProvider(indexer, cfg.snippets !== false);
+      const snippetsEnabled = cfg.snippets !== false;
+      if (!completionDisposable || completionSnippetsEnabled !== snippetsEnabled) {
+        completionDisposable?.dispose();
+        const completionProvider = new TclCompletionProvider(indexer, snippetsEnabled);
         completionDisposable = vscode.languages.registerCompletionItemProvider({ language: 'tcl' }, completionProvider, '(', ' ', '$');
         context.subscriptions.push(completionDisposable);
+        completionSnippetsEnabled = snippetsEnabled;
       }
-    } else if (completionDisposable) { completionDisposable.dispose(); completionDisposable = undefined; }
+    } else if (completionDisposable) {
+      completionDisposable.dispose();
+      completionDisposable = undefined;
+      completionSnippetsEnabled = undefined;
+    }
 
     // signature help
     if (cfg.signatureHelp !== false) {
